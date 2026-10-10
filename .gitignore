@@ -16,3 +16,6 @@ __pycache__/
 *.webm
 *.log
 .DS_Store
+
+.venv
+node_modules

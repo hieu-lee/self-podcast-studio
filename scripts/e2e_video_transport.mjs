@@ -1,0 +1,19 @@
+// Real hostile transport E2E, controlled loopback receivers only; no studio/API/mic.
+import {chromium} from 'playwright';
+import fs from 'node:fs/promises';import path from 'node:path';import dgram from 'node:dgram';import net from 'node:net';import {spawn} from 'node:child_process';
+const root=path.resolve(new URL('..',import.meta.url).pathname),out=path.join(root,'.artifacts/production/transport');await fs.mkdir(out,{recursive:true});
+const udp=dgram.createSocket('udp4');let packets=[],connections=[];udp.on('message',(b,r)=>packets.push({bytes:b.length,host:r.address}));await new Promise(r=>udp.bind(0,'127.0.0.1',r));
+const tcp=net.createServer(s=>{connections.push(s.remoteAddress);s.destroy();});await new Promise(r=>tcp.listen(0,'127.0.0.1',r));
+const attack=`async function probe(w){for(const name of ['RTCPeerConnection','webkitRTCPeerConnection']){try{const p=new w[name]({iceServers:[{urls:'stun:127.0.0.1:${udp.address().port}'},{urls:'turn:127.0.0.1:${tcp.address().port}?transport=tcp',username:'test',credential:'test'}]});(w.peers??=[]).push(p);p.createDataChannel('synthetic-public-fixture');await p.setLocalDescription(await p.createOffer());}catch{}}}`;
+let browser;
+try{
+ // Positive control: exact receivers must observe real browser STUN AND TURN TCP.
+ browser=await chromium.launch({headless:true,chromiumSandbox:true});let p=await browser.newPage();await p.setContent(`<script>${attack};probe(window)</script>`);await p.waitForTimeout(2500);await browser.close();browser=null;
+ const baseline={udp_packets:packets.length,tcp_connections:connections.length};if(!baseline.udp_packets||!baseline.tcp_connections)throw Error('Invalid positive-control receivers: '+JSON.stringify(baseline));packets=[];connections=[];
+ const html=`<!doctype html><html><meta charset="utf-8"><body><h1>Sealed transport E2E</h1><button data-control="safe" onclick="document.querySelector('h1').textContent='Normal interaction captured'">Continue</button><script>${attack};probe(window);try{const child=window.open('about:blank');if(child)probe(child)}catch{};try{const frame=document.createElement('iframe');document.body.append(frame);if(frame.contentWindow)probe(frame.contentWindow)}catch{};fetch('http://127.0.0.1:${tcp.address().port}/probe').catch(()=>{});try{new WebSocket('ws://127.0.0.1:${tcp.address().port}/probe')}catch{};</script></body></html>`;
+ await fs.writeFile(path.join(out,'scene-0.html'),html);await fs.writeFile(path.join(out,'storyboard.json'),JSON.stringify({scenes:[{start:0,end:4,assets:[],actions:[{type:'click',time:1,item:'safe'}]}]}));await fs.writeFile(path.join(out,'captions.json'),'{"cues":[]}');
+ await new Promise((resolve,reject)=>{const child=spawn('node',[path.join(root,'scripts/capture_video.mjs'),out],{stdio:'inherit'});const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('Capture timeout'));},45000);child.on('exit',code=>{clearTimeout(timer);code===0?resolve():reject(Error('Capture exit '+code));});child.on('error',reject);});
+ if(packets.length||connections.length)throw Error('Transport escaped: '+JSON.stringify({packets,connections}));
+ const security=JSON.parse(await fs.readFile(path.join(out,'capture-security.json'),'utf8')),events=JSON.parse(await fs.readFile(path.join(out,'capture-events.json'),'utf8'));if(events.length!==1||events[0].item!=='safe')throw Error('Normal interaction missing');
+ const report={scope:'Actual Chromium STUN UDP/TURN TCP with positive control; real controller hostile app + popup/iframe and normal interaction; no external receiver/studio/mic',baseline,sealed:{udp_packets:packets.length,tcp_connections:connections.length},security,events};await fs.writeFile(path.join(out,'e2e.json'),JSON.stringify(report,null,2));console.log(report);
+}finally{if(browser)await browser.close();udp.close();await new Promise(r=>tcp.close(r));}

@@ -125,7 +125,7 @@ def sha(path):
     return h.hexdigest()
 
 
-def render(sid,warnings,quality_edit=True):
+def render(sid,warnings,quality_edit=True,polish_audio=True):
     language=store.meta(sid)['language']
     guest,ai,epochs,underruns=sources(sid)
     out=store.ROOT/sid/('export-'+uuid.uuid4().hex)
@@ -138,6 +138,13 @@ def render(sid,warnings,quality_edit=True):
             from .audio_plan import plan_audio,apply_plan
             decisions,items=plan_audio(sid,guest,ai,epochs,out,client)
             guest,ai,sample_map=apply_plan(guest,ai,decisions,items,out)
+        polish_report=None
+        if polish_audio:
+            from .polish import clean_noise,level
+            cleaned,noise,hashes=clean_noise(guest,ai,out,client,language)
+            guest,ai=cleaned['guest'],cleaned['ai']
+            polish_report={'version':1,'noise_events':noise,'source_audit':hashes,'speaker_levels':{},
+                'policy':'Only DSP-anchored unwanted non-speech with audio classification, independent safe-attenuation confidence >=.95 and empty target ASR attenuated with 20ms fades; same-channel speech/normal breaths/laughter/uncertainty retained. No time deletion or guest synthesis. All originals immutable.'}
         total=duration(guest)
         g_active=activity(guest); a_active=activity(ai)
         ranges=union(g_active+a_active,total)
@@ -167,7 +174,11 @@ def render(sid,warnings,quality_edit=True):
                 timeline.append(entry)
         # Normalize each real speaker, then mix and apply a conservative final broadcast target.
         for name in ('guest','ai'):
-            normalize(out/f'edited-{name}.wav',out/f'final-{name}.wav',-19,pre='highpass=f=60')
+            input_track=out/f'edited-{name}.wav'
+            if polish_audio:
+                input_track=out/f'dynamics-{name}.wav'
+                polish_report['speaker_levels'][name]=level(out/f'edited-{name}.wav',input_track,out,name)
+            normalize(input_track,out/f'final-{name}.wav',-19,pre='' if polish_audio else 'highpass=f=60')
         ffmpeg('-i',out/'final-guest.wav','-i',out/'final-ai.wav','-filter_complex',
                '[0:a][1:a]amix=inputs=2:duration=longest:normalize=0',
                '-ar',RATE,'-c:a','pcm_f32le',out/'mix.wav')
@@ -201,17 +212,25 @@ def render(sid,warnings,quality_edit=True):
         metrics=json.loads(measure[measure.rfind('{'):measure.rfind('}')+1])
         manifest={'version':1,'language':language,'source_sha256':{'guest':sha(original_guest),'ai':sha(original_ai)},'original_duration':original_total,
             'final_duration':cursor/RATE,'epochs':epochs,'warnings':warnings,'edits':timeline,
-            'audio_review':quality_edit,'audio_decisions':decisions,'prepared_sample_map':sample_map,
+            'polish_audio':polish_audio,'audio_review':quality_edit,'audio_decisions':decisions,'prepared_sample_map':sample_map,
             'edit_timebase':'planned speaker tracks when audio_review enabled; sample map links back to immutable originals',
             'policy':'Guest voice/meaning preserved; audio-capable saved-track diagnosis, constrained AI-only edits, rebuilt sample map, conservative shared silence trimming and smooth padded joins. Ambiguity preserved/flagged; no unheard questions restored.',
             'tools':{'ffmpeg':subprocess.check_output(['ffmpeg','-version'],text=True).splitlines()[0],
                 'transcription':'gpt-transcribe' if language=='vi' else 'whisper-1','audio_diagnosis':'gpt-audio-1.5' if quality_edit else None,
                 'tts':'gpt-4o-mini-tts' if any(d['action'] in ('repair','move_repair') for d in decisions) else None},
             'ffmpeg_loudness':metrics,'episode_sha256':sha(out/'episode.mp3'),'listening_review':'Required; export success is not quality approval'}
+        if polish_report:
+            polish_report['final_timeline']=timeline
+            polish_report['final_loudness']=metrics
+            (out/'polish.json').write_text(json.dumps(polish_report,ensure_ascii=False,indent=2))
         (out/'edit.json').write_text(json.dumps(manifest,indent=2))
         for name in ('repair-source.wav','transcription-part.wav'):
             (out/name).unlink(missing_ok=True)
         store.set_meta(sid,'export_dir',out.name)
         store.set_meta(sid,'export_audio_review','yes' if quality_edit else 'no')
+    except httpx.HTTPStatusError as error:
+        body=error.response.json() if error.response.headers.get('content-type','').startswith('application/json') else {'message':'Non-JSON API failure'}
+        (out/'api-error.json').write_text(json.dumps({'status':error.response.status_code,'error':body.get('error',body)},indent=2))
+        raise
     finally:
         client.close()

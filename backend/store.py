@@ -76,7 +76,7 @@ def add_epoch(sid, eid, wall):
     with db(sid) as c:
         c.execute('INSERT INTO epochs VALUES (?,?,NULL)',(eid,wall))
         c.execute("UPDATE meta SET value='recording' WHERE key='state'")
-        c.execute("DELETE FROM meta WHERE key IN ('export_dir','export_status','export_audio_review')")
+        c.execute("DELETE FROM meta WHERE key IN ('export_dir','export_status','export_audio_review','video_job')")
 
 
 def chunk(sid, header, pcm):

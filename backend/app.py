@@ -26,6 +26,11 @@ active = set()
 jobs = {}
 
 
+@app.on_event('shutdown')
+async def stop_visual_producers():
+    from . import video
+    await video.shutdown()
+
 @app.middleware('http')
 async def local_boundary(request: Request, call_next):
     if request.headers.get('host') != '127.0.0.1:8765':
@@ -87,6 +92,9 @@ async def session(sid: str):
     m['events']=store.events(sid,('recovery_warning',))
     m['exporting']=sid in jobs
     m['connected']=sid in active
+    from . import video
+    m['video']=video.current(sid)
+    m['polished_audio']=bool(m.get('export_dir') and (store.ROOT/sid/m['export_dir']/'polish.json').is_file())
     return m
 
 
@@ -100,6 +108,8 @@ async def epoch(sid: str,data: Epoch):
     idle(sid)
     if any(e['expected'] is None for e in store.meta(sid)['epochs']):
         raise HTTPException(409,'Recover the previous unsealed capture first')
+    from . import video
+    video.invalidate(sid)
     store.add_epoch(sid,data.id,data.wall_ms)
     return {'ok':True}
 
@@ -271,6 +281,7 @@ This is a fresh API connection. Earlier conversation is partial TEXT context, no
 class Export(BaseModel):
     acknowledge_gaps: bool = False
     quality_edit: bool = True
+    polish_audio: bool = True
 
 
 @app.post('/api/sessions/{sid}/export')
@@ -285,10 +296,12 @@ async def export(sid: str,data: Export):
     if warnings and not data.acknowledge_gaps:
         raise HTTPException(409,'Acknowledge known recording gaps before export: '+' '.join(warnings))
     from .edit import render
+    from . import video
+    video.invalidate(sid)
     async def work():
         try:
             store.set_meta(sid,'export_status','Rendering / transcribing actual saved audio…')
-            await asyncio.to_thread(render,sid,warnings,data.quality_edit)
+            await asyncio.to_thread(render,sid,warnings,data.quality_edit,data.polish_audio)
             store.set_meta(sid,'export_status','Ready to listen — not yet approved')
         except Exception as e:
             # Save type, not raw API request/header diagnostics.
@@ -317,7 +330,7 @@ async def approve(sid: str,data: Approval):
 @app.get('/api/sessions/{sid}/files/{name}')
 async def file(sid: str,name: str,version: str | None=Query(default=None,pattern=r'^export-[a-f0-9]{32}$')):
     checked(sid)
-    if name not in {'episode.mp3','transcript.json','transcript.txt','edit.json','original-guest.wav','original-ai.wav','audio-diagnosis.json','audio-edit-plan.json'}:
+    if name not in {'episode.mp3','transcript.json','transcript.txt','edit.json','original-guest.wav','original-ai.wav','audio-diagnosis.json','audio-edit-plan.json','polish.json','noise-evidence.json'}:
         raise HTTPException(404,'Unknown artifact')
     root=store.ROOT/sid/('sources' if name.startswith('original') else version or store.meta(sid).get('export_dir','export'))
     path=root/name
@@ -325,6 +338,53 @@ async def file(sid: str,name: str,version: str | None=Query(default=None,pattern
         raise HTTPException(404,'Artifact not ready')
     return FileResponse(path,filename=name)
 
+
+
+class VideoRequest(BaseModel):
+    version: str = Field(pattern=r'^export-[a-f0-9]{32}$')
+
+class VideoJob(VideoRequest):
+    job_id: str = Field(pattern=r'^video-[a-f0-9]{32}$')
+
+@app.post('/api/sessions/{sid}/video')
+async def make_video(sid: str,data: VideoRequest):
+    idle(sid)
+    from . import video
+    try:job=video.start(sid,data.version)
+    except ValueError as e:raise HTTPException(409,str(e))
+    return {'job_id':job}
+
+@app.post('/api/sessions/{sid}/video/cancel')
+async def cancel_video(sid: str,data: VideoJob):
+    checked(sid)
+    from . import video
+    try:return video.cancel(sid,data.version,data.job_id)
+    except ValueError as e:raise HTTPException(404,str(e))
+
+@app.post('/api/sessions/{sid}/video/approve')
+async def approve_video(sid: str,data: VideoJob):
+    idle(sid)
+    from . import video
+    state=video.current(sid)
+    if not state or state['audio_version']!=data.version or state['job_id']!=data.job_id or state['state']!='completed':
+        raise HTTPException(409,'Video/audio version changed or not ready; review current output')
+    state['approved']=True;video.write(video.status_path(sid,data.version,data.job_id),state)
+    return {'ok':True}
+
+@app.get('/api/sessions/{sid}/video/{job_id}/files/{name}')
+async def video_file(sid: str,job_id: str,name: str,version: str=Query(pattern=r'^export-[a-f0-9]{32}$')):
+    checked(sid)
+    from . import video
+    try:root=video.status_path(sid,version,job_id).parent
+    except ValueError:raise HTTPException(404,'Unknown video attempt')
+    if name not in {'episode.mp4','storyboard.json','provenance.json','captions.srt','captions.json','validation.json','capture-events.json','capture-security.json','project.zip'}:
+        raise HTTPException(404,'Unknown video artifact')
+    state=root/'status.json'
+    if name=='episode.mp4' and (not state.exists() or video.load(state)['state']!='completed'):
+        raise HTTPException(409,'Video is not complete/verified')
+    path=root/name
+    if not path.exists():raise HTTPException(404,'Artifact not ready')
+    return FileResponse(path,filename=name)
 
 DIST=Path(__file__).resolve().parent.parent/'frontend'/'dist'
 if DIST.exists():
