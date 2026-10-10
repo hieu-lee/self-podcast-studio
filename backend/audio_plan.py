@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import re
+import unicodedata
 import wave
 
 import numpy as np
@@ -39,8 +40,9 @@ def wav_bytes(pcm):
     return b.getvalue()
 
 
-def text_audio(client,pcm):
-    r=client.post('https://api.openai.com/v1/audio/transcriptions',data={'model':'gpt-transcribe'},
+def text_audio(client,pcm,language="en"):
+    r=client.post('https://api.openai.com/v1/audio/transcriptions',data={'model':'gpt-transcribe','languages[]':[language,'en'] if language=='vi' else ['en'],
+        'prompt':f'{store.LANGUAGES[language]} interview; retain original words, tones, names and mixed English terms. Never translate.'},
         files={'file':('played.wav',wav_bytes(pcm),'audio/wav')})
     r.raise_for_status()
     return r.json()['text'].strip()
@@ -49,7 +51,7 @@ def text_audio(client,pcm):
 def same_words(a,b):
     # Fuzzy similarity can admit a short added "not" and reverse a question.
     # Ignore punctuation/case only; disagreement preserves the actual recording.
-    normalize=lambda s: re.findall(r"\w+(?:'\w+)*",s.casefold().replace('’',"'"),flags=re.UNICODE)
+    normalize=lambda s: re.findall(r"\w+(?:'\w+)*",unicodedata.normalize('NFC',s).casefold().replace('’',"'"),flags=re.UNICODE)
     return bool(normalize(a)) and normalize(a)==normalize(b)
 
 
@@ -87,6 +89,7 @@ def metadata(sid,epochs):
 
 def plan_audio(sid,guest,ai,epochs,out,client):
     from .edit import activity,union,cut,wav_writer,duration
+    language=store.meta(sid)['language']
     items=metadata(sid,epochs);length=duration(guest)
     # Silence-trim unions can merge two different answers: never use their ends
     # as conversational anchors. The audio reviewer must confirm an actual block.
@@ -110,7 +113,8 @@ def plan_audio(sid,guest,ai,epochs,out,client):
                     'fully_played_and_done':item['full'],'playback_gaps':[[x/RATE,y/RATE] for x,y in item['gaps']],
                     'guest_overlap_seconds':overlap,'api_failed':item['failed'],'intentional_interrupt':item['intentional_interrupt'],
                     'generated_transcript_hint_NOT_proof_of_heard_words':item.get('generated_transcript_hint')})
-            prompt=f'''You are reviewing actual saved podcast AUDIO, not hypothetical text. File 1 is the authoritative GUEST microphone track; file 2 is the authoritative AI INTERVIEWER output track. Same sample clock, time window {left:.3f} to {right:.3f} seconds in the source. Guest speech/meaning must never change. Listen to both and distinguish a short natural backchannel or intentional interruption from an intrusive mistimed full interviewer question while the guest continues a prior answer. Diagnose technical gaps/stutters/cut-off speech from the audio plus these playback facts: {json.dumps(facts)}.
+            prompt=f'''Episode language: {store.LANGUAGES[language]}. Transcribe heard_text in its original spoken language with full diacritics, names and mixed English terms. NEVER translate, remove accents or rephrase any words. Diagnostic evidence may be English.
+You are reviewing actual saved podcast AUDIO, not hypothetical text. File 1 is the authoritative GUEST microphone track; file 2 is the authoritative AI INTERVIEWER output track. Same sample clock, time window {left:.3f} to {right:.3f} seconds in the source. Guest speech/meaning must never change. Listen to both and distinguish a short natural backchannel or intentional interruption from an intrusive mistimed full interviewer question while the guest continues a prior answer. Diagnose technical gaps/stutters/cut-off speech from the audio plus these playback facts: {json.dumps(facts)}.
 Actual guest acoustic blocks (NOT necessarily complete answers): {json.dumps(blocks)}. For move_repair, return move_after_guest_block (an index from this list) and prior_guest_answer_complete=true ONLY if audio proves that block ends the PRIOR answer, not a phrase pause or the subsequent answer to this question. Select the block where the guest is still speaking when the intrusive question finishes. If the prior answer continues across a later pause, or the boundary is ambiguous, preserve/flag rather than moving past a subsequent answer. Other actions use move_after_guest_block=null and prior_guest_answer_complete=false.
 For the natural_overlap field: TRUE means a short intentional natural backchannel/acknowledgment or deliberate natural interruption that should remain. Mere temporal overlap is NOT natural_overlap: a full intrusive question over the continuing previous answer is FALSE. If action/evidence and this classification disagree, preserve and flag ambiguity rather than invent an edit.
 Generated transcript hints are provisional and MAY contain unheard tails. Audio is authoritative; these hints NEVER authorize reconstructing an unheard question.
@@ -164,16 +168,16 @@ Return ONLY JSON with items, one for every supplied item_id. Each item has item_
                         played=cut(a,item['start']/RATE,item['end']/RATE)
                         played_path=out/('played-'+str(len(accepted))+'.wav')
                         played_path.write_bytes(wav_bytes(played))
-                        text=text_audio(client,played)
+                        text=text_audio(client,played,language)
                         entry.update(played_verification={'model':'gpt-transcribe','file':played_path.name,
                             'sha256':hashlib.sha256(played_path.read_bytes()).hexdigest(),'text':text})
                         if not text or not same_words(text,d.heard_text):
                             entry.update(action='preserve',flag='Independent audio transcription disagrees with diagnosis; no new words allowed')
                         else:
                             speech=client.post('https://api.openai.com/v1/audio/speech',json={'model':'gpt-4o-mini-tts','voice':'marin',
-                                'input':text,'response_format':'pcm','instructions':'Natural warm interviewer. Speak exactly these words; no added introduction or content.'})
+                                'input':text,'response_format':'pcm','instructions':f'Natural warm {store.LANGUAGES[language]} interviewer, clear pronunciation and tones. Speak exactly these original words including mixed names/terms; never translate, no added introduction or content.'})
                             speech.raise_for_status();pcm=speech.content
-                            verified=text_audio(client,pcm) if len(pcm)%2==0 else ''
+                            verified=text_audio(client,pcm,language) if len(pcm)%2==0 else ''
                             entry['replacement_verification']={'model':'gpt-transcribe','text':verified,
                                 'pcm_sha256':hashlib.sha256(pcm).hexdigest()}
                             if not verified or not same_words(text,verified):
@@ -197,7 +201,7 @@ Return ONLY JSON with items, one for every supplied item_id. Each item has item_
                 d.update(action='preserve',flag='Movement would reorder a later substantive interviewer turn')
             elif any(i['id']!=d['item_id'] and any(x<d['insert_sample']<y for x,y in i['spans']) for i in items):
                 d.update(action='preserve',flag='Movement would split another interviewer turn')
-    (out/'audio-diagnosis.json').write_text(json.dumps({'audio_model':'gpt-audio-1.5','windows':raw,'decisions':accepted},indent=2))
+    (out/'audio-diagnosis.json').write_text(json.dumps({'language':language,'audio_model':'gpt-audio-1.5','windows':raw,'decisions':accepted},indent=2))
     return accepted,items
 
 

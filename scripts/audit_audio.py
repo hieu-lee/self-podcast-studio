@@ -1,4 +1,7 @@
 """E2E evidence audit: the real browser/API capture and its FFmpeg export."""
+import argparse
+import os
+import httpx
 import base64
 import hashlib
 import json
@@ -7,7 +10,8 @@ import wave
 from pathlib import Path
 import numpy as np
 
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'.artifacts'
+parser=argparse.ArgumentParser();parser.add_argument('--language',choices=['en','vi'],default='en');language=parser.parse_args().language
+ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'.artifacts'/('vietnamese' if language=='vi' else '')
 report=json.loads((OUT/'browser-e2e.json').read_text());sid=report['session_id']
 received=json.loads((OUT/'live-events.json').read_text())
 generated={}
@@ -62,7 +66,17 @@ check('balanced final loudness inspected',abs(float(metrics['input_i'])+16)<1)
 check('no clipping in final measured export',float(metrics['input_tp'])<=-1)
 segments=json.loads((export/'transcript.json').read_text())['segments']
 check('final transcript re-aligned against rendered tracks',all(0<=s['start']<s['end']<=manifest['final_duration']+.1 for s in segments))
-result={'session_id':sid,'checks':sorted(set(checks)),'measured_lufs':metrics['input_i'],'true_peak_db':metrics['input_tp'],
+if language=='vi':
+    actual_ai=ROOT/'.data'/sid/'sources'/'original-ai.wav'
+    with actual_ai.open('rb') as f:
+        r=httpx.post('https://api.openai.com/v1/audio/transcriptions',
+            headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},
+            data={'model':'gpt-transcribe'},files={'file':('actually-played-ai.wav',f,'audio/wav')},timeout=180)
+    r.raise_for_status()
+    check('independent actual played AI audio detected as Vietnamese',any(x['code']=='vi' for x in r.json().get('languages',[])))
+    (OUT/'actual-ai-language.json').write_text(json.dumps({'source':str(actual_ai),'sha256':hashlib.sha256(actual_ai.read_bytes()).hexdigest(),
+        'response':r.json(),'scope':'Independent transcription of rendered/saved Realtime AI audio, no language hint or provisional transcript input.'},ensure_ascii=False,indent=2))
+result={'language':language,'session_id':sid,'checks':sorted(set(checks)),'measured_lufs':metrics['input_i'],'true_peak_db':metrics['input_tp'],
         'source_seconds':total/24000,'final_seconds':manifest['final_duration'],
         'quality_note':'Objective waveform, timing, levels and transcript inspection. Human listening approval still required; deliberate interruption fragments are preserved, not invented as complete questions.'}
 (OUT/'audio-audit.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

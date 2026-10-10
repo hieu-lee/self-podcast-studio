@@ -4,9 +4,11 @@ import {api,Recording,recoverPending} from './recording.js';
 import './style.css';
 const TOPIC='Can AI discover new mathematics, or only recombine what humans already know?';
 const outline=['What would count as genuinely new mathematics?','Where is the line between a surprising pattern and a proof?','If an AI finds a theorem nobody understands, what have we learned?'];
+const languageLabel=code=>code==='vi'?'Tiếng Việt':'English';
+const vietnameseOutline=['Điều gì được xem là toán học thực sự mới?','Ranh giới giữa một mẫu hình bất ngờ và một chứng minh là gì?','Nếu AI tìm ra định lý mà không ai hiểu, chúng ta đã học được gì?'];
 const clock=n=>`${String(Math.floor(n/60)).padStart(2,'0')}:${String(Math.floor(n%60)).padStart(2,'0')}`;
 function App(){
- const [topic,setTopic]=useState(TOPIC),[consent,setConsent]=useState(false),[boot,setBoot]=useState(null),[sessions,setSessions]=useState([]),[selected,setSelected]=useState(null),[status,setStatus]=useState({phase:'idle',connection:'Not started',backlog:0,mic:0,ai:0}),[turns,setTurns]=useState([]),[elapsed,setElapsed]=useState(0),[quality,setQuality]=useState(true),[gaps,setGaps]=useState(false),[busy,setBusy]=useState(false);
+ const [topic,setTopic]=useState(TOPIC),[language,setLanguage]=useState('en'),[consent,setConsent]=useState(false),[boot,setBoot]=useState(null),[sessions,setSessions]=useState([]),[selected,setSelected]=useState(null),[status,setStatus]=useState({phase:'idle',connection:'Not started',backlog:0,mic:0,ai:0}),[turns,setTurns]=useState([]),[elapsed,setElapsed]=useState(0),[quality,setQuality]=useState(true),[gaps,setGaps]=useState(false),[busy,setBusy]=useState(false);
  const recorder=useRef(null),refreshGeneration=useRef(0);const merge=s=>setStatus(x=>({...x,...s}));
  async function refresh(){const generation=++refreshGeneration.current,sid=selected?.id;const items=await api('sessions');if(generation!==refreshGeneration.current)return;setSessions(items);if(sid){const fresh=await api('sessions/'+sid);if(generation===refreshGeneration.current)setSelected(current=>current?.id===sid?fresh:current);}}
  useEffect(()=>{(async()=>{try{setBoot(await api('bootstrap'));await recoverPending(n=>merge({backlog:n}));setSessions(await api('sessions'));}catch(e){merge({error:e.message});}})();},[]);
@@ -17,7 +19,7 @@ function App(){
  async function start(resume=false){await action(async()=>{
    if(!consent)throw new Error('Please confirm audio consent first.');
    await recoverPending(n=>merge({backlog:n}));
-   let s=resume?selected:await api('sessions',{method:'POST',body:JSON.stringify({topic})});
+   let s=resume?selected:await api('sessions',{method:'POST',body:JSON.stringify({topic,language})});
    if(resume&&s.epochs.some(e=>e.expected===null))throw new Error('Recover the interrupted capture first.');
    setSelected(s);setTurns([]);setElapsed(0);
    recorder.current=new Recording(s.id,merge,e=>{
@@ -40,16 +42,19 @@ function App(){
     <section className="studio">
      {!live ? <>
       <div className="section-top"><span className="number">01</span><h2>Choose the conversation</h2><span className="tag">30—60 MIN</span></div>
+      <label className="field-label" htmlFor="language">PODCAST LANGUAGE</label>
+      <select id="language" aria-label="Podcast language" value={language} disabled={busy} onChange={e=>setLanguage(e.target.value)}><option value="en">English</option><option value="vi">Tiếng Việt</option></select>
+      <p className="hint">Interviewer, your answers and the episode use this language. Fixed for each recording; no translation.</p>
       <label className="field-label" htmlFor="topic">WHAT'S ON YOUR MIND?</label>
       <textarea id="topic" value={topic} onChange={e=>setTopic(e.target.value)} maxLength={1000} rows={3}/>
-      <div className="prepared"><span className="tiny">A FEW DOORS WE COULD OPEN</span><ul>{(topic===TOPIC?outline:['What makes this topic matter to you?','Can you walk me through a concrete example?','What would change your mind?']).map(q=><li key={q}>{q}</li>)}</ul><p>Prompts, not a script. Follow-ups come from your answers.</p></div>
+      <div className="prepared"><span className="tiny">A FEW DOORS WE COULD OPEN</span><ul>{(language==='vi'?(topic===TOPIC?vietnameseOutline:['Điều gì khiến chủ đề này quan trọng với bạn?','Bạn có thể kể một ví dụ cụ thể không?','Điều gì sẽ khiến bạn thay đổi quan điểm?']):(topic===TOPIC?outline:['What makes this topic matter to you?','Can you walk me through a concrete example?','What would change your mind?'])).map(q=><li key={q}>{q}</li>)}</ul><p>Prompts, not a script. Follow-ups come from your answers.</p></div>
       <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I agree to microphone recording and sending necessary audio/text to OpenAI. Recordings stay on this Mac; the interviewer voice is AI-generated.</span></label>
       <button className="primary" disabled={busy||!consent||!boot?.key_ready||topic.trim().length<3} onClick={()=>start()}>Start the conversation <span>↗</span></button>
       <div className="hint">Use headphones · Chrome recommended · Recording starts only when you choose</div>
       {boot&&!boot.key_ready&&<div className="notice error">Set OPENAI_API_KEY in the backend environment and restart. No key belongs in this page.</div>}
      </> : <>
       <div className="section-top"><span className="record-dot"/><h2>{status.phase==='saving'?'Saving your conversation':'On the record'}</h2><span className="tag">{clock(elapsed)}</span></div>
-      <h3 className="live-topic">{selected?.topic}</h3>
+      <h3 className="live-topic">{selected?.topic}</h3><p className="hint">Episode language: {languageLabel(selected?.language)}</p>
       <div className="meters">{[['Your microphone',status.mic],['AI speaker output',status.ai]].map(([label,level])=><div key={label}><span>{label}</span><div className="meter"><div style={{width:`${Math.min(100,level*180)}%`}}/></div></div>)}</div>
       <div className="health"><span><i className={status.connection==='Connected'?'good':'amber'}/>{status.connection}</span><span>{status.backlog?`${status.backlog}s queued locally`:'1s chunks · upload caught up'}</span></div>
       <p className="live-help">Take your time. The interviewer will follow your lead.<br/>Keep this tab open and the Mac awake. Missing audio cannot be recreated.</p>
@@ -58,8 +63,8 @@ function App(){
      </>}
     </section>
     <aside><div className="section-top"><span className="number">02</span><h2>Your recordings</h2></div><p className="aside-copy">From a live exchange to a finished episode. Originals are never discarded.</p>
-     <div className="session-list">{sessions.length?sessions.map(s=><button className={selected?.id===s.id?'session selected':'session'} key={s.id} data-session-id={s.id} disabled={live||busy} onClick={()=>action(async()=>{setSelected(await api('sessions/'+s.id));setTurns([]);merge({phase:'saved',warning:''});})}><span>{s.topic}</span><small>{clock(s.frames/24000)} captured · {live&&selected?.id===s.id?'recording':s.epochs.some(e=>e.expected===null)?'needs recovery':'saved'}</small></button>):<div className="empty"><span>◎</span><p>Your first conversation<br/>belongs here.</p></div>}</div>
-     {selected&&!live&&<div className="export-panel"><span className="tiny">SELECTED RECORDING</span><h3>{selected.topic}</h3><p>{clock(selected.frames/24000)} of saved source audio</p>
+     <div className="session-list">{sessions.length?sessions.map(s=><button className={selected?.id===s.id?'session selected':'session'} key={s.id} data-session-id={s.id} disabled={live||busy} onClick={()=>action(async()=>{setSelected(await api('sessions/'+s.id));setTurns([]);merge({phase:'saved',warning:''});})}><span>{s.topic}</span><small>{clock(s.frames/24000)} captured · {languageLabel(s.language)} · {live&&selected?.id===s.id?'recording':s.epochs.some(e=>e.expected===null)?'needs recovery':'saved'}</small></button>):<div className="empty"><span>◎</span><p>Your first conversation<br/>belongs here.</p></div>}</div>
+     {selected&&!live&&<div className="export-panel"><span className="tiny">SELECTED RECORDING</span><h3>{selected.topic}</h3><p>{clock(selected.frames/24000)} of saved source audio · Episode language: {languageLabel(selected.language)}</p>
       <button disabled={busy} onClick={()=>action(async()=>{await api('bootstrap');await recoverPending(n=>merge({backlog:n}));await refresh();})}>Retry pending local upload</button>
       {unsealed?<button disabled={busy} onClick={()=>action(async()=>{await recoverPending(n=>merge({backlog:n}));await api(`sessions/${selected.id}/recover`,{method:'POST'});merge({warning:'Recovered committed audio only. Unsaved tail is not restored.'});await refresh();})}>Recover committed audio</button>:<button disabled={busy||!consent||selected.exporting} onClick={()=>start(true)}>Resume with microphone consent</button>}
       <label className="check"><input type="checkbox" checked={gaps} onChange={e=>setGaps(e.target.checked)}/>I acknowledge any capture gaps / lost tail</label>

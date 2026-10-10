@@ -6,6 +6,8 @@ import time
 import uuid
 from pathlib import Path
 
+LANGUAGES={'en':'English','vi':'Vietnamese'}
+
 ROOT = Path(os.environ.get('SELF_PODCAST_DATA', '.data')).resolve()
 ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
 os.chmod(ROOT, 0o700)
@@ -23,7 +25,8 @@ def db(sid):
     return con
 
 
-def create(topic):
+def create(topic,language="en"):
+    if language not in LANGUAGES:raise ValueError("Unsupported episode language")
     sid = uuid.uuid4().hex
     path = ROOT / sid
     path.mkdir(mode=0o700)
@@ -37,13 +40,14 @@ def create(topic):
             header TEXT, pcm BLOB, PRIMARY KEY(epoch, seq));
           CREATE TABLE events (id INTEGER PRIMARY KEY, at REAL, body TEXT);
         ''')
-        c.executemany('INSERT INTO meta VALUES (?,?)', [('topic',topic),('created',str(time.time())),('state','saved')])
+        c.executemany('INSERT INTO meta VALUES (?,?)', [('topic',topic),('language',language),('created',str(time.time())),('state','saved')])
     return sid
 
 
 def meta(sid):
     with db(sid) as c:
         m = dict(c.execute('SELECT key,value FROM meta').fetchall())
+        m.setdefault('language','en')  # Legacy episodes stay English without a DB migration.
         m.update(id=sid, epochs=[dict(r) for r in c.execute('SELECT * FROM epochs ORDER BY wall_ms')],
                  chunks=c.execute('SELECT COUNT(*) FROM chunks').fetchone()[0],
                  frames=c.execute('SELECT COALESCE(SUM(frames),0) FROM chunks').fetchone()[0])

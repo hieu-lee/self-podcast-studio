@@ -1,4 +1,5 @@
 """Render repeatable two-voice source/final waveform evidence; no audio edits."""
+import argparse
 import html
 import json
 import subprocess
@@ -6,7 +7,8 @@ import wave
 from pathlib import Path
 import numpy as np
 
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'.artifacts'/'two-voice'
+parser=argparse.ArgumentParser();parser.add_argument('--language',choices=['en','vi'],default='en');language=parser.parse_args().language
+ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'.artifacts'/('two-voice-vi' if language=='vi' else 'two-voice')
 s=json.loads((OUT/'session.json').read_text());export=ROOT/'.data'/s['session_id']/s['export_dir']
 width=1600;plot=1500;parts=[f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="800" viewBox="0 0 {width} 800">',
  '<rect width="1600" height="800" fill="#101918"/>',

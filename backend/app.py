@@ -7,6 +7,7 @@ import os
 import secrets
 import struct
 from pathlib import Path
+from typing import Literal
 
 import websockets
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -66,6 +67,7 @@ def idle(sid):
 
 class Topic(BaseModel):
     topic: str = Field(min_length=3,max_length=1000)
+    language: Literal['en','vi'] = 'en'
 
 
 @app.get('/api/sessions')
@@ -75,7 +77,7 @@ async def sessions():
 
 @app.post('/api/sessions')
 async def create(data: Topic):
-    return store.meta(store.create(data.topic.strip()))
+    return store.meta(store.create(data.topic.strip(),data.language))
 
 
 @app.get('/api/sessions/{sid}')
@@ -193,7 +195,11 @@ async def live(ws: WebSocket,sid: str):
     children=[]
     try:
         context=await asyncio.to_thread(store.heard_context,sid)
-        instructions=f'''You are an engaging, warm podcast interviewer; Hieu is the guest. Your voice is AI-generated. Topic: {m['topic']}.
+        language=m['language']
+        language_rule=('Phỏng vấn hoàn toàn bằng tiếng Việt tự nhiên, rõ dấu và thanh điệu. Hỏi và hỏi tiếp bằng tiếng Việt, kể cả khi chủ đề viết bằng tiếng Anh. Giữ nguyên tên riêng và thuật ngữ tiếng Anh khi cần. Không dịch lời khách sang tiếng Anh, không đổi ngôn ngữ theo chủ đề hay ngữ cảnh cũ.'
+            if language=='vi' else 'Interview in natural English. Keep original names and technical terms.')
+        instructions=f'''{language_rule}
+You are an engaging, warm podcast interviewer; Hieu is the guest. Your voice is AI-generated. Topic: {m['topic']}.
 Ask exactly one brief open question at a time. Listen to the whole answer. Ask responsive follow-ups about specific ideas, examples, disagreements and uncertainty. Never answer for Hieu or pretend to be him. Don't lecture, invent research claims, or repeat a prepared script. Aim for a thoughtful 30-60 minute discussion, not a timed monologue. Allow thinking pauses. If Hieu asks to finish, give a short genuine closing.
 This is a fresh API connection. Earlier conversation is partial TEXT context, not restored audio. Only these verified complete heard turns and guest transcripts are retained (older context may be omitted):\n{context}'''
         async with websockets.connect('wss://api.openai.com/v1/realtime?model='+MODEL,
@@ -202,7 +208,8 @@ This is a fresh API connection. Earlier conversation is partial TEXT context, no
                 'type':'realtime','instructions':instructions,'output_modalities':['audio'],
                 'max_output_tokens':800,
                 'audio':{'input':{'format':{'type':'audio/pcm','rate':24000},
-                    'transcription':{'model':'gpt-4o-transcribe'},
+                    'transcription':{'model':'gpt-4o-transcribe','language':language,
+                        'prompt':f'{store.LANGUAGES[language]} podcast conversation. Transcribe original spoken words including mixed English names/terms; never translate.'},
                     'turn_detection':{'type':'semantic_vad','eagerness':'low','create_response':True,'interrupt_response':True}},
                     'output':{'format':{'type':'audio/pcm','rate':24000},'voice':'marin'}}}}))
             async def receive():
@@ -211,7 +218,7 @@ This is a fresh API connection. Earlier conversation is partial TEXT context, no
                     t=e['type']
                     if t=='session.updated':
                         await ws.send_json({'type':'ready','context_chars':len(context),
-                            'context_sha256':hashlib.sha256(context.encode()).hexdigest(),'model':MODEL})
+                            'context_sha256':hashlib.sha256(context.encode()).hexdigest(),'model':MODEL,'language':language})
                     if t.startswith('response.') or t.startswith('input_audio_buffer.') or 'transcription' in t or t=='error':
                         saved=dict(e)
                         if t=='response.output_audio.delta':
@@ -232,9 +239,9 @@ This is a fresh API connection. Earlier conversation is partial TEXT context, no
                     else:
                         e=json.loads(raw['text'])
                         if e['type']=='begin':
-                            await upstream.send(json.dumps({'type':'response.create','response':{'instructions':instructions+'\nStart with a brief welcome and one opening question.'}}))
+                            await upstream.send(json.dumps({'type':'response.create','response':{'instructions':instructions+('\nChào ngắn gọn và đặt một câu hỏi mở bằng tiếng Việt.' if language=='vi' else '\nStart with a brief welcome and one opening question.')}}))
                         elif e['type']=='continue':
-                            await upstream.send(json.dumps({'type':'response.create','response':{'instructions':instructions+'\nBriefly acknowledge the reconnection; ask Hieu where to pick up. Do not invent what was lost.'}}))
+                            await upstream.send(json.dumps({'type':'response.create','response':{'instructions':instructions+('\nXác nhận kết nối lại ngắn gọn bằng tiếng Việt; hỏi Hieu muốn tiếp tục ở đâu. Không bịa nội dung bị mất.' if language=='vi' else '\nBriefly acknowledge the reconnection; ask Hieu where to pick up. Do not invent what was lost.')}}))
                         elif e['type']=='interrupt':
                             await upstream.send(json.dumps({'type':'response.cancel'}))
                         elif e['type']=='truncate':

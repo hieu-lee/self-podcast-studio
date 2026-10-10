@@ -74,12 +74,21 @@ def intersects(ranges,a,b):
     return any(x<b and y>a for x,y in ranges)
 
 
-def transcribe(client,path):
+def transcribe(client,path,language="en"):
+    data={'model':'whisper-1','response_format':'verbose_json','timestamp_granularities[]':'segment','language':language}
+    if language=='vi':
+        # Better native captions; this model has no segment timestamps. Never
+        # attach another model's word/segment alignment to its different text.
+        data={'model':'gpt-transcribe','languages[]':['vi','en'],
+              'prompt':'Vietnamese interview; retain original words, tones, names and mixed English terms. Never translate.'}
     with open(path,'rb') as f:
         r=client.post('https://api.openai.com/v1/audio/transcriptions',
-             data={'model':'whisper-1','response_format':'verbose_json','timestamp_granularities[]':'segment'},
+             data=data,
              files={'file':(path.name,f,'audio/wav')})
     r.raise_for_status()
+    if language=='vi':
+        text=r.json()['text'].strip()
+        return {'segments':[{'start':0,'end':duration(path),'text':text}] if text else []}
     return r.json()
 
 
@@ -117,6 +126,7 @@ def sha(path):
 
 
 def render(sid,warnings,quality_edit=True):
+    language=store.meta(sid)['language']
     guest,ai,epochs,underruns=sources(sid)
     out=store.ROOT/sid/('export-'+uuid.uuid4().hex)
     out.mkdir(mode=0o700)
@@ -175,7 +185,7 @@ def render(sid,warnings,quality_edit=True):
                         end=min(finish,offset+300)
                         clip=out/'transcription-part.wav'
                         with wav_writer(clip) as cw: cw.writeframes(cut(w,offset,end))
-                        result=transcribe(client,clip)
+                        result=transcribe(client,clip,language)
                         for s in result.get('segments',[]):
                             left=max(offset,offset+float(s['start'])); right=min(end,offset+float(s['end']))
                             audible=[[max(left,x),min(right,y)] for x,y in active_ranges if x<right and y>left]
@@ -184,17 +194,18 @@ def render(sid,warnings,quality_edit=True):
                         offset=end
         transcript.sort(key=lambda s:s['start'])
         if not transcript: raise ValueError('No reliable audio transcript')
-        (out/'transcript.json').write_text(json.dumps({'alignment':'Whisper segment estimates on edited speaker tracks; review against audio','segments':transcript},indent=2))
+        alignment='Acoustic crop-boundary estimates on edited speaker tracks; not word alignment; review against audio' if language=='vi' else 'Whisper segment estimates on edited speaker tracks; review against audio'
+        (out/'transcript.json').write_text(json.dumps({'language':language,'alignment':alignment,'segments':transcript},indent=2))
         (out/'transcript.txt').write_text('\n'.join(f"[{s['start']:.2f}–{s['end']:.2f}] {s['speaker']}: {s['text']}" for s in transcript)+'\n')
         measure=ffmpeg('-i',out/'episode.mp3','-af','loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json','-f','null','-')
         metrics=json.loads(measure[measure.rfind('{'):measure.rfind('}')+1])
-        manifest={'version':1,'source_sha256':{'guest':sha(original_guest),'ai':sha(original_ai)},'original_duration':original_total,
+        manifest={'version':1,'language':language,'source_sha256':{'guest':sha(original_guest),'ai':sha(original_ai)},'original_duration':original_total,
             'final_duration':cursor/RATE,'epochs':epochs,'warnings':warnings,'edits':timeline,
             'audio_review':quality_edit,'audio_decisions':decisions,'prepared_sample_map':sample_map,
             'edit_timebase':'planned speaker tracks when audio_review enabled; sample map links back to immutable originals',
             'policy':'Guest voice/meaning preserved; audio-capable saved-track diagnosis, constrained AI-only edits, rebuilt sample map, conservative shared silence trimming and smooth padded joins. Ambiguity preserved/flagged; no unheard questions restored.',
             'tools':{'ffmpeg':subprocess.check_output(['ffmpeg','-version'],text=True).splitlines()[0],
-                'transcription':'whisper-1','audio_diagnosis':'gpt-audio-1.5' if quality_edit else None,
+                'transcription':'gpt-transcribe' if language=='vi' else 'whisper-1','audio_diagnosis':'gpt-audio-1.5' if quality_edit else None,
                 'tts':'gpt-4o-mini-tts' if any(d['action'] in ('repair','move_repair') for d in decisions) else None},
             'ffmpeg_loudness':metrics,'episode_sha256':sha(out/'episode.mp3'),'listening_review':'Required; export success is not quality approval'}
         (out/'edit.json').write_text(json.dumps(manifest,indent=2))
