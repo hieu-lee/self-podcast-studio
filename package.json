@@ -1,0 +1,1 @@
+{"name":"self-podcast","private":true,"version":"0.1.0","type":"module","scripts":{"build":"vite build --config frontend/vite.config.js","dev":"vite --config frontend/vite.config.js --host 127.0.0.1","e2e":"node scripts/e2e_browser.mjs"},"dependencies":{"react":"19.2.4","react-dom":"19.2.4"},"devDependencies":{"vite":"7.3.1","@vitejs/plugin-react":"5.1.4","playwright":"1.58.2"}}
