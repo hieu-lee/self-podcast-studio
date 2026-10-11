@@ -17,6 +17,7 @@ export async function run(page,context){
  await page.screenshot({path:OUT+'desktop-start.png'});
  if(language==='vi'){await page.getByLabel('Podcast language',{exact:true}).selectOption('vi');await page.screenshot({path:OUT+'desktop-language.png'});}
  check('explicit consent required',await page.getByRole('button',{name:'Start the conversation'}).isDisabled());
+ await page.getByLabel('Prepare with web research & allow live public lookups').uncheck();
  await page.locator('.consent input').check();
  await page.getByRole('button',{name:'Start the conversation'}).click();
  await page.getByRole('heading',{name:'On the record'}).waitFor({timeout:20000});
@@ -66,7 +67,7 @@ export async function run(page,context){
  check('export playable in browser',audio.playing&&audio.duration>15);
  await sleep(500);await page.locator('audio').evaluate(a=>a.pause());
  const previousVersion=state.export_dir;
- await page.getByLabel('Audio-aware AI review & repairs (never my voice)',{exact:true}).uncheck();
+ await page.getByLabel('AI audio repair (never my voice)',{exact:true}).uncheck();
  await page.getByRole('button',{name:'Make the episode'}).click();
  for(let i=0;i<300;i++){
    state=await json('sessions/'+s.id);
@@ -77,10 +78,10 @@ export async function run(page,context){
  const currentPlayer=page.locator(`audio[src*="${state.export_dir}"]`);await currentPlayer.waitFor();
  const playerVersion=await currentPlayer.evaluate(async a=>{await new Promise((resolve,reject)=>{if(a.readyState>=1)return resolve();a.onloadedmetadata=resolve;a.onerror=reject;});return a.currentSrc;});
  check('player refreshes to new export without a page reload',playerVersion.includes(state.export_dir)&&!playerVersion.includes(previousVersion));
- check('transcript link matches new player version',(await page.getByRole('link',{name:'Final transcript ↗',exact:true}).getAttribute('href')).includes(state.export_dir));
+ check('transcript link matches new player version',(await page.getByRole('link',{name:'Final transcript',exact:true}).getAttribute('href')).includes(state.export_dir));
  const obsoleteApproval=await page.evaluate(async({sid,version})=>(await fetch('/api/sessions/'+sid+'/approve',{method:'POST',headers:{'Content-Type':'application/json','X-Self-Podcast':'1'},body:JSON.stringify({version})})).status,{sid:s.id,version:previousVersion});
  check('obsolete listening confirmation cannot approve a different export',obsoleteApproval===409);
- check('audio diagnosis links absent when review disabled',await page.getByRole('link',{name:'AI audio diagnosis ↗',exact:true}).count()===0);
+ check('audio diagnosis links absent when review disabled',await page.getByRole('link',{name:'AI audio diagnosis',exact:true}).count()===0&&await page.getByRole('link',{name:'Validated audio plan',exact:true}).count()===0);
  await page.screenshot({path:OUT+'desktop-export.png',fullPage:true});
  const transcript=await json('sessions/'+s.id+'/files/transcript.json');
  check('export preserves episode language',transcript.language===language);

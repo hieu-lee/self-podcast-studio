@@ -14,7 +14,39 @@ cd /Users/hieu.leduc/Documents/ChatGPT/self-podcast
 
 Open **http://127.0.0.1:8765**. Keep the terminal, browser tab and Mac awake. Use headphones. Nothing records until you check consent and press Start; Resume also needs consent. For an already running instance, just open the URL. Stop the server with Ctrl-C **after** saving the recording. Optional: `SELF_PODCAST_DATA=/absolute/private/path` changes local storage; `SELF_PODCAST_MODEL` changes the Realtime model.
 
+The UI is the minimal topic-first serif design with a red recording button, responsive recording sidebar, and system light/dark themes. `start.sh` builds and serves `frontend/dist` from the checkout where it runs; restarting an older checkout can therefore show its older UI. Verify the active checkout/build rather than assuming a browser cache problem.
+
 The starter topic is **“Can AI discover new mathematics, or only recombine what humans already know?”** with three exploratory questions. The interviewer follows actual answers, one question at a time; the outline is not a rigid script.
+
+## Prepare and check public facts
+
+With **Prepare with web research** enabled, review the editable **Public research query**, check consent and choose Start. The studio searches **before microphone access** and shows a sourced briefing, clickable inline citations and retrieval times. Choose **Start with researched briefing** to record. Search failure/cancellation leaves the microphone off: retry, go back, or explicitly continue without verified research. Disable the research checkbox for a voice-only interview. A saved recording's Resume is equally explicit and prepares a fresh brief in its fixed episode language.
+
+During recording, ask aloud to check a current fact or use **Live public research query → Ask interviewer to check**. Realtime calls a custom function; the backend runs the same Responses `web_search` helper asynchronously. Capture/upload continue. Results resume the interviewer only after guest speech/commit and any active AI response. Interrupt cancels a pending lookup; reconnect cancels the old connection and restores dated evidence separately from complete heard turns. Model-spoken/guest-spoken examples are **unverified until sourced**. This is OpenAI hosted web search, **not a Google-specific integration**.
+
+Only short public search questions go to the research helper, not the full interview transcript/audio/files. Remove personal details from queries; obvious emails/credentials/local paths are refused, but this is not comprehensive personal-data detection. Research sends queries to OpenAI and its web-search providers. API credentials remain backend-only. Web content is treated as untrusted evidence, never executable instructions. Publisher-named queries are restricted to official OpenAI/Anthropic/Google domains; other topics ask for primary sources. A sourced model summary is still fallible: inspect its links, distinguish opinion from evidence, and do not infer completeness or current account/region availability.
+
+The local episode ledger retains bounded summaries/citations/query/model and **retrieved-at** UTC timestamps, independent of audio/export/video versions. Publication dates stay explicitly unverified rather than being invented. The UI shows the latest three entries; the authenticated `GET /api/sessions/<id>/research` returns the latest twelve. Each episode allows twelve requests (including failures/cancellations); each request has a 45-second deadline and at most three hosted tool calls, two searches globally and one pending per episode. Reconnect does not reset the persistent request budget. `SELF_PODCAST_RESEARCH_MODEL` defaults to `gpt-5.5`; changing it requires actual account/tool compatibility and has no silent model fallback.
+
+API mechanics: [official Responses web search](https://developers.openai.com/api/docs/guides/tools-web-search) and [Realtime custom function calling](https://developers.openai.com/api/docs/guides/realtime-conversations#function-calling). Realtime itself is not falsely presented as having the Responses hosted tool.
+
+Repeatable focused E2Es (run one server at a time; never stop a human capture/export):
+
+```sh
+npm run build
+.venv/bin/python scripts/e2e_research_server.py   # Owned remote fixtures, isolated .artifacts/research/fixture-data
+# in another terminal:
+node scripts/e2e_ui_restore.mjs                 # Intended design + retained export/video controls, owned UI metadata
+node scripts/e2e_research.mjs                   # Real UI/worklet/HTTP/relay, forced failures/races; no paid API
+# stop that fixture server after the test; then:
+.venv/bin/python scripts/e2e_research_real_server.py  # Actual API, separate real-data, public Responses evidence observer
+# in another terminal (paid API, no human microphone):
+.venv/bin/python scripts/e2e_research_live.py      # EN/VI actual function calls + independent AI audio transcription
+node scripts/e2e_research_real_browser.mjs       # EN/VI real prep/live tool + cached synthetic guest capture
+.venv/bin/python scripts/audit_research_capture.py # Byte-exact played PCM + independent unhinted AI transcription
+```
+
+The real-browser test uses cached synthetic guest WAVs under `.artifacts/` and `.artifacts/vietnamese/`;  generate them with `scripts/make_fixture.py`/`--language vi` before running on a new machine. Artifacts under ignored `.artifacts/research/` include public provider requests/responses (no auth headers), source ledgers, actual audio/transcriptions, assertions, desktop/mobile screenshots and Playwright traces. Protocol fixtures are confined to test processes, never a production fallback. These checks are not a real hour, exhaustive fact checking or human listening approval.
 
 ## English / Vietnamese episodes
 

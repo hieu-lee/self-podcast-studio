@@ -2,6 +2,7 @@ import React,{useState,useEffect,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import {api,Recording,recoverPending} from './recording.js';
 import './style.css';
+import {ResearchPanel} from './research.jsx';
 import {VideoStage} from './video.jsx';
 const TOPIC='Can AI discover new mathematics, or only recombine what humans already know?';
 const outline=['What would count as genuinely new mathematics?','Where is the line between a surprising pattern and a proof?','If an AI finds a theorem nobody understands, what have we learned?'];
@@ -10,75 +11,110 @@ const vietnameseOutline=['Điều gì được xem là toán học thực sự m
 const clock=n=>`${String(Math.floor(n/60)).padStart(2,'0')}:${String(Math.floor(n%60)).padStart(2,'0')}`;
 function App(){
  const [topic,setTopic]=useState(TOPIC),[language,setLanguage]=useState('en'),[consent,setConsent]=useState(false),[boot,setBoot]=useState(null),[sessions,setSessions]=useState([]),[selected,setSelected]=useState(null),[status,setStatus]=useState({phase:'idle',connection:'Not started',backlog:0,mic:0,ai:0}),[turns,setTurns]=useState([]),[elapsed,setElapsed]=useState(0),[quality,setQuality]=useState(true),[polish,setPolish]=useState(true),[gaps,setGaps]=useState(false),[busy,setBusy]=useState(false);
- const recorder=useRef(null),refreshGeneration=useRef(0);const merge=s=>setStatus(x=>({...x,...s}));
+ const [researchEnabled,setResearchEnabled]=useState(true),[researchQuery,setResearchQuery]=useState(TOPIC.slice(0,280)),[prep,setPrep]=useState(null),[liveQuery,setLiveQuery]=useState(''),[researchStatus,setResearchStatus]=useState('');
+ const prepAbort=useRef(null),prepGeneration=useRef(0);
+ const recorder=useRef(null),refreshGeneration=useRef(0);const merge=s=>{setStatus(x=>({...x,...s}));if(s.connection&&s.connection!=='Connected')setResearchStatus('');};
  async function refresh(){const generation=++refreshGeneration.current,sid=selected?.id;const items=await api('sessions');if(generation!==refreshGeneration.current)return;setSessions(items);if(sid){const fresh=await api('sessions/'+sid);if(generation===refreshGeneration.current)setSelected(current=>current?.id===sid?fresh:current);}}
  useEffect(()=>{(async()=>{try{setBoot(await api('bootstrap'));await recoverPending(n=>merge({backlog:n}));setSessions(await api('sessions'));}catch(e){merge({error:e.message});}})();},[]);
  useEffect(()=>{const t=setInterval(()=>{if(status.started&&['live','saving'].includes(status.phase))setElapsed((Date.now()-status.started)/1000);},500);return()=>clearInterval(t);},[status.started,status.phase]);
  useEffect(()=>{const t=setInterval(()=>refresh().catch(()=>{}),3000);return()=>{clearInterval(t);refreshGeneration.current++;};},[selected?.id]);
  useEffect(()=>{const guard=e=>{if(recorder.current?.running||status.backlog){e.preventDefault();e.returnValue='Recording or pending upload';}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[status.backlog]);
  async function action(fn){refreshGeneration.current++;setBusy(true);merge({error:''});try{await fn();}catch(e){merge({error:e.message});}finally{setBusy(false);}}
- async function start(resume=false){await action(async()=>{
-   if(!consent)throw new Error('Please confirm audio consent first.');
-   await recoverPending(n=>merge({backlog:n}));
-   let s=resume?selected:await api('sessions',{method:'POST',body:JSON.stringify({topic,language})});
-   if(resume&&s.epochs.some(e=>e.expected===null))throw new Error('Recover the interrupted capture first.');
-   setSelected(s);setTurns([]);setElapsed(0);
+ async function record(s,resume){
+   setSelected(s);setTurns([]);setElapsed(0);setPrep(null);setResearchStatus('');
    recorder.current=new Recording(s.id,merge,e=>{
      if(e.type==='response.output_audio_transcript.done')setTurns(t=>[...t.slice(-11),{speaker:'AI interviewer · provisional',text:e.transcript}]);
      if(e.type==='conversation.item.input_audio_transcription.completed')setTurns(t=>[...t.slice(-11),{speaker:'Hieu · provisional',text:e.transcript}]);
+     if(e.type==='research.status')setResearchStatus(e.status==='checking'?'Checking web sources while recording continues…':e.status==='cancelled'?'Research cancelled; no new fact verified.':e.text||e.status);
+     if(e.type==='research.result'){setResearchStatus(e.result.status==='ready'?'New evidence saved; interviewer will continue after your turn.':'Research unavailable; facts remain unverified.');setSelected(current=>current?.id===s.id?{...current,research:[...(current.research||[]),e.result].slice(-3)}:current);}
    });
    await recorder.current.start(resume);
+ }
+ async function prepare(s,resume){
+   const generation=++prepGeneration.current;
+   prepAbort.current=new AbortController();
+   setPrep({sid:s.id,resume,status:'checking',query:researchQuery,topic:s.topic});
+   try{
+     const result=await api(`sessions/${s.id}/research`,{method:'POST',body:JSON.stringify({query:researchQuery}),signal:AbortSignal.any([prepAbort.current.signal,AbortSignal.timeout(60000)])});
+     if(generation!==prepGeneration.current)return;
+     setSelected(current=>current?.id===s.id?{...current,research:[...(current.research||[]),result].slice(-3)}:current);
+     setPrep({sid:s.id,resume,status:result.status==='ready'?'ready':'failed',query:researchQuery,topic:s.topic});
+   }catch(e){if(generation===prepGeneration.current){setPrep({sid:s.id,resume,status:'failed',query:researchQuery,topic:s.topic});merge({error:e.message});}}
+ }
+ async function cancelPrep(){
+   const sid=prep?.sid;prepGeneration.current++;prepAbort.current?.abort();
+   if(sid)await api(`sessions/${sid}/research/cancel`,{method:'POST'});
+   setPrep(current=>current?{...current,status:'failed'}:current);
+ }
+ async function start(resume=false){await action(async()=>{
+   if(!consent)throw new Error('Please confirm audio and research consent first.');
+   await recoverPending(n=>merge({backlog:n}));
+   const s=resume?selected:await api('sessions',{method:'POST',body:JSON.stringify({topic,language})});
+   if(resume&&s.epochs.some(e=>e.expected===null))throw new Error('Recover the interrupted capture first.');
+   s.research_enabled=researchEnabled?'yes':'no';setSelected(s);
+   await api(`sessions/${s.id}/research/settings`,{method:'POST',body:JSON.stringify({enabled:researchEnabled})});
+   if(researchEnabled)await prepare(s,resume);else await record(s,resume);
+ });}
+ async function startPrepared(){await action(async()=>{
+   if(!consent)throw new Error('Confirm microphone and research consent first.');
+   if(selected?.id!==prep?.sid)throw new Error('Select the prepared episode first.');
+   // A failed prep never silently turns off live research; unavailable facts stay uncertain.
+   await record(selected,prep.resume);
  });}
  const live=['live','saving'].includes(status.phase);
  const unsealed=selected?.epochs?.some(e=>e.expected===null);
  const files=name=>`/api/sessions/${selected.id}/files/${name}${name.startsWith('original')?'':'?version='+selected.export_dir}`;
+ const prompts=language==='vi'?(topic===TOPIC?vietnameseOutline:['Điều gì khiến chủ đề này quan trọng với bạn?','Bạn có thể kể một ví dụ cụ thể không?','Điều gì sẽ khiến bạn thay đổi quan điểm?']):(topic===TOPIC?outline:['What makes this topic matter to you?','Can you walk me through a concrete example?','What would change your mind?']);
  return <div className="shell">
-  <header><a className="brand" href="/" onClick={e=>live&&e.preventDefault()}><span className="mark">s/</span> self podcast</a><div className="local"><i/> LOCAL STUDIO <span>·</span> HIEU</div></header>
+  <header><a className="brand" href="/" onClick={e=>live&&e.preventDefault()}>Self Podcast</a></header>
   <main>
-   <div className="eyebrow">A GOOD QUESTION IS A PLACE TO BEGIN</div>
-   <div className="heading"><h1>Your ideas,<br/><em>out loud.</em></h1><p>A thoughtful conversation.<br/>Your real voice. An AI interviewer.<br/>An episode worth listening to.</p></div>
-   {status.error&&<div className="notice error" role="alert">{status.error}</div>}
-   {status.warning&&<div className="notice" role="status">{status.warning}</div>}
-   <div className="grid">
-    <section className="studio">
-     {!live ? <>
-      <div className="section-top"><span className="number">01</span><h2>Choose the conversation</h2><span className="tag">30—60 MIN</span></div>
-      <label className="field-label" htmlFor="language">PODCAST LANGUAGE</label>
-      <select id="language" aria-label="Podcast language" value={language} disabled={busy} onChange={e=>setLanguage(e.target.value)}><option value="en">English</option><option value="vi">Tiếng Việt</option></select>
-      <p className="hint">Interviewer, your answers and the episode use this language. Fixed for each recording; no translation.</p>
-      <label className="field-label" htmlFor="topic">WHAT'S ON YOUR MIND?</label>
-      <textarea id="topic" value={topic} onChange={e=>setTopic(e.target.value)} maxLength={1000} rows={3}/>
-      <div className="prepared"><span className="tiny">A FEW DOORS WE COULD OPEN</span><ul>{(language==='vi'?(topic===TOPIC?vietnameseOutline:['Điều gì khiến chủ đề này quan trọng với bạn?','Bạn có thể kể một ví dụ cụ thể không?','Điều gì sẽ khiến bạn thay đổi quan điểm?']):(topic===TOPIC?outline:['What makes this topic matter to you?','Can you walk me through a concrete example?','What would change your mind?'])).map(q=><li key={q}>{q}</li>)}</ul><p>Prompts, not a script. Follow-ups come from your answers.</p></div>
-      <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I agree to microphone recording and sending necessary audio/text to OpenAI. Recordings stay on this Mac; the interviewer voice is AI-generated.</span></label>
-      <button className="primary" disabled={busy||!consent||!boot?.key_ready||topic.trim().length<3} onClick={()=>start()}>Start the conversation <span>↗</span></button>
-      <div className="hint">Use headphones · Chrome recommended · Recording starts only when you choose</div>
-      {boot&&!boot.key_ready&&<div className="notice error">Set OPENAI_API_KEY in the backend environment and restart. No key belongs in this page.</div>}
-     </> : <>
-      <div className="section-top"><span className="record-dot"/><h2>{status.phase==='saving'?'Saving your conversation':'On the record'}</h2><span className="tag">{clock(elapsed)}</span></div>
-      <h3 className="live-topic">{selected?.topic}</h3><p className="hint">Episode language: {languageLabel(selected?.language)}</p>
-      <div className="meters">{[['Your microphone',status.mic],['AI speaker output',status.ai]].map(([label,level])=><div key={label}><span>{label}</span><div className="meter"><div style={{width:`${Math.min(100,level*180)}%`}}/></div></div>)}</div>
-      <div className="health"><span><i className={status.connection==='Connected'?'good':'amber'}/>{status.connection}</span><span>{status.backlog?`${status.backlog}s queued locally`:'1s chunks · upload caught up'}</span></div>
-      <p className="live-help">Take your time. The interviewer will follow your lead.<br/>Keep this tab open and the Mac awake. Missing audio cannot be recreated.</p>
-      <div className="live-controls"><button disabled={status.phase==='saving'||busy} onClick={()=>recorder.current.interrupt()}>Interrupt AI</button><button disabled={status.phase==='saving'||busy} onClick={()=>action(()=>recorder.current.connect(true))}>Reconnect AI</button><button className="stop" disabled={status.phase==='saving'||busy} onClick={()=>action(async()=>{await recorder.current.stop();await refresh();})}>■ Stop & save</button></div>
-      <div className="transcripts"><span className="tiny">LIVE NOTES · MAY INCLUDE UNPLAYED AI WORDS · FINAL TRANSCRIPT USES AUDIO</span>{turns.length?turns.map((t,i)=><p key={i}><b>{t.speaker}</b>{t.text}</p>):<p className="muted">Listening for the first exchange…</p>}</div>
-     </>}
-    </section>
-    <aside><div className="section-top"><span className="number">02</span><h2>Your recordings</h2></div><p className="aside-copy">From a live exchange to a finished episode. Originals are never discarded.</p>
-     <div className="session-list">{sessions.length?sessions.map(s=><button className={selected?.id===s.id?'session selected':'session'} key={s.id} data-session-id={s.id} disabled={live||busy} onClick={()=>action(async()=>{setSelected(await api('sessions/'+s.id));setTurns([]);merge({phase:'saved',warning:''});})}><span>{s.topic}</span><small>{clock(s.frames/24000)} captured · {languageLabel(s.language)} · {live&&selected?.id===s.id?'recording':s.epochs.some(e=>e.expected===null)?'needs recovery':'saved'}</small></button>):<div className="empty"><span>◎</span><p>Your first conversation<br/>belongs here.</p></div>}</div>
-     {selected&&!live&&<div className="export-panel"><span className="tiny">SELECTED RECORDING</span><h3>{selected.topic}</h3><p>{clock(selected.frames/24000)} of saved source audio · Episode language: {languageLabel(selected.language)}</p>
-      <button disabled={busy} onClick={()=>action(async()=>{await api('bootstrap');await recoverPending(n=>merge({backlog:n}));await refresh();})}>Retry pending local upload</button>
-      {unsealed?<button disabled={busy} onClick={()=>action(async()=>{await recoverPending(n=>merge({backlog:n}));await api(`sessions/${selected.id}/recover`,{method:'POST'});merge({warning:'Recovered committed audio only. Unsaved tail is not restored.'});await refresh();})}>Recover committed audio</button>:<button disabled={busy||!consent||selected.exporting} onClick={()=>start(true)}>Resume with microphone consent</button>}
-      <label className="check"><input type="checkbox" checked={gaps} onChange={e=>setGaps(e.target.checked)}/>I acknowledge any capture gaps / lost tail</label>
-      <label className="check"><input type="checkbox" checked={quality} onChange={e=>setQuality(e.target.checked)}/>Audio-aware AI playback review & repairs (never synthesize my voice)</label>
-      <label className="check"><input type="checkbox" checked={polish} onChange={e=>setPolish(e.target.checked)}/>Speaker balance & cautious noise/cough cleanup</label>
-      <button className="primary" disabled={busy||unsealed||selected.exporting||!selected.frames} onClick={()=>action(async()=>{await recoverPending(n=>merge({backlog:n}));await api(`sessions/${selected.id}/export`,{method:'POST',body:JSON.stringify({acknowledge_gaps:gaps,quality_edit:quality,polish_audio:polish})});await refresh();})}>{selected.exporting?'Rendering & transcribing…':'Make the episode'} <span>↗</span></button>
-      {selected.export_status&&<p role="status" className="export-status">{selected.export_status}</p>}
-      {selected.export_dir&&<><audio key={selected.export_dir} controls src={files('episode.mp3')}/><div className="downloads"><a href={files('episode.mp3')}>Download audio ↗</a><a href={files('transcript.txt')}>Final transcript ↗</a><a href={files('edit.json')}>Edit record ↗</a>{selected.polished_audio&&<a href={files('polish.json')}>Noise & volume audit ↗</a>}{selected.export_audio_review==='yes'&&<><a href={files('audio-diagnosis.json')}>AI audio diagnosis ↗</a><a href={files('audio-edit-plan.json')}>Validated audio plan ↗</a></>}<a href={files('original-guest.wav')}>Original guest ↗</a><a href={files('original-ai.wav')}>Original AI ↗</a></div><p className="hint">Listen for missing words, joins, overlap and levels. Transcript timing is estimated, not word-perfect.</p><button disabled={busy||selected.exporting} onClick={()=>action(async()=>{await api(`sessions/${selected.id}/approve`,{method:'POST',body:JSON.stringify({version:selected.export_dir})});await refresh();})}>I've listened and checked the episode</button><VideoStage session={selected} busy={busy} action={action} refresh={refresh}/></>}
-     </div>}
-     <div className="privacy"><span>⌁</span><div><b>A private, local studio</b><p>Audio and transcripts are saved on this Mac. Hosted AI processes necessary audio/text. No automatic publishing.</p></div></div>
-    </aside>
-   </div>
-  </main><footer><span>LESS PRODUCTION. MORE CONVERSATION.</span><span>SELF PODCAST / PROTOTYPE 01</span></footer>
+   <section className="stage">
+    {status.error&&<div className="notice error" role="alert">{status.error}</div>}
+    {status.warning&&<div className="notice" role="status">{status.warning}</div>}
+    {!live ? <>
+     <label className="sr-only" htmlFor="topic">Topic</label>
+     <textarea id="topic" className="topic" value={topic} disabled={busy||!!prep} onChange={e=>{setTopic(e.target.value);setResearchQuery(e.target.value.slice(0,280));}} maxLength={1000} rows={3} placeholder="What do you want to talk about?"/>
+     <ul className="prompts">{prompts.map(q=><li key={q}>{q}</li>)}</ul>
+      <label className="check"><input type="checkbox" checked={researchEnabled} disabled={busy||!!prep} onChange={e=>setResearchEnabled(e.target.checked)}/>Prepare with web research & allow live public lookups</label>
+      {researchEnabled&&<><label className="field-label" htmlFor="research-query">PUBLIC RESEARCH QUERY</label><input id="research-query" aria-label="Public research query" value={researchQuery} maxLength={280} disabled={prep?.status==='checking'} onChange={e=>setResearchQuery(e.target.value)}/><p className="hint">Only this short query is sent for prep. Live lookups send short public questions, not your full transcript. Remove personal details. Sources and retrieval times stay with this episode.</p></>}
+     <label className="consent"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>Record my microphone and send necessary audio and text to OpenAI. With research enabled, short public queries may reach web-search providers. Recordings stay on this Mac. The interviewer voice is AI.</span></label>
+     <div className="start-row">
+      {!prep&&<button className="primary" disabled={busy||!consent||!boot?.key_ready||topic.trim().length<3||(researchEnabled&&researchQuery.trim().length<3)} onClick={()=>start()}><span className="dot"/>Start the conversation</button>}
+      <select id="language" aria-label="Podcast language" value={language} disabled={busy||!!prep} onChange={e=>setLanguage(e.target.value)}><option value="en">English</option><option value="vi">Tiếng Việt</option></select>
+      <span className="hint">Use headphones</span>
+     </div>
+      {prep&&<div className="research-prep" role="status"><b>{prep.status==='checking'?'Checking web sources — microphone is off':prep.status==='ready'?'Sourced briefing ready — microphone is still off':'Research unavailable — microphone is still off'}</b><p>{prep.topic}</p>{prep.query!==researchQuery&&<p className="hint">Query changed; retry before using the briefing.</p>}{prep.status==='checking'?<button onClick={()=>cancelPrep().catch(e=>merge({error:e.message}))}>Cancel research</button>:<><button disabled={busy||!consent||(prep.status==='ready'&&prep.query!==researchQuery)} className="primary" onClick={startPrepared}>{prep.status==='ready'?'Start with researched briefing':'Continue without verified research'}</button><button disabled={busy||researchQuery.trim().length<3} onClick={()=>action(()=>prepare(selected,prep.resume))}>Retry research</button><button disabled={busy} onClick={()=>{prepGeneration.current++;setPrep(null);}}>Back to topic</button></>}</div>}
+     {boot&&!boot.key_ready&&<div className="notice error">Set OPENAI_API_KEY in the backend environment and restart.</div>}
+    </> : <>
+     <div className="live-top"><span className="dot pulse"/><h2>{status.phase==='saving'?'Saving your conversation':'On the record'}</h2><span className="timer">{clock(elapsed)}</span></div>
+     <h3 className="topic">{selected?.topic}</h3>
+     <div className="meters">{[['You',status.mic],['Interviewer',status.ai]].map(([label,level])=><div key={label}><span>{label}</span><div className="meter"><div style={{width:`${Math.min(100,level*180)}%`}}/></div></div>)}</div>
+     <div className="health"><span><i className={status.connection==='Connected'?'good':'amber'}/>{status.connection}</span><span>{status.backlog?`${status.backlog}s queued locally`:'Upload caught up'}</span><span>{languageLabel(selected?.language)}</span></div>
+     <div className="live-controls"><button disabled={status.phase==='saving'||busy} onClick={()=>recorder.current.interrupt()}>Interrupt AI</button><button disabled={status.phase==='saving'||busy} onClick={()=>action(()=>recorder.current.connect(true))}>Reconnect AI</button><button className="stop" disabled={status.phase==='saving'||busy} onClick={()=>action(async()=>{await recorder.current.stop();await refresh();})}>Stop & save</button></div>
+     <p className="hint">Keep this tab open and your Mac awake.</p>
+      {selected?.research_enabled==='yes'&&<div className="live-research"><label className="field-label" htmlFor="live-research-query">LIVE PUBLIC RESEARCH QUERY</label><input id="live-research-query" aria-label="Live public research query" value={liveQuery} maxLength={280} onChange={e=>setLiveQuery(e.target.value)}/><button disabled={busy||status.phase==='saving'||status.connection!=='Connected'||liveQuery.trim().length<3} onClick={()=>{recorder.current.ws.send(JSON.stringify({type:'research_request',query:liveQuery}));setLiveQuery('');}}>Ask interviewer to check</button><p className="hint">Or ask aloud for a current fact. Your capture continues during a lookup.</p></div>}
+      {researchStatus&&<p className="notice" role="status">{researchStatus}</p>}
+     <div className="transcripts"><h4>Live notes <span>Provisional. May include unplayed AI words.</span></h4>{turns.length?turns.map((t,i)=><p key={i}><b>{t.speaker}</b>{t.text}</p>):<p className="muted">Listening…</p>}</div>
+    </>}
+    <ResearchPanel entries={selected?.research||[]} topic={selected?.topic}/>
+   </section>
+   <aside>
+    <h2>Recordings</h2>
+    <div className="session-list">{sessions.length?sessions.map(s=><button className={selected?.id===s.id?'session selected':'session'} key={s.id} data-session-id={s.id} disabled={live||busy||!!prep} onClick={()=>action(async()=>{setSelected(await api('sessions/'+s.id));setTopic(s.topic);setLanguage(s.language||'en');setResearchQuery(s.topic.slice(0,280));setResearchEnabled(s.research_enabled!=='no');setPrep(null);setTurns([]);merge({phase:'saved',warning:''});})}><span>{s.topic}</span><small><span>{clock(s.frames/24000)}</span><span>{languageLabel(s.language)}</span><span>{live&&selected?.id===s.id?'Recording':s.epochs.some(e=>e.expected===null)?'Needs recovery':'Saved'}</span></small></button>):<p className="muted">No recordings yet.</p>}</div>
+    {selected&&!live&&<div className="export-panel">
+     <h3>{selected.topic}</h3><p className="meta"><span>{clock(selected.frames/24000)}</span><span>{languageLabel(selected.language)}</span></p>
+     <div className="row">{unsealed?<button disabled={busy} onClick={()=>action(async()=>{await recoverPending(n=>merge({backlog:n}));await api(`sessions/${selected.id}/recover`,{method:'POST'});merge({warning:'Recovered committed audio only. Unsaved tail is not restored.'});await refresh();})}>Recover committed audio</button>:<button disabled={busy||!!prep||!consent||selected.exporting} onClick={()=>start(true)}>Resume recording</button>}
+      <button disabled={busy} onClick={()=>action(async()=>{await api('bootstrap');await recoverPending(n=>merge({backlog:n}));await refresh();})}>Retry upload</button></div>
+     {!unsealed&&!consent&&!selected.exporting&&<p className="hint">Check the recording consent to resume.</p>}
+     <label className="check"><input type="checkbox" checked={quality} onChange={e=>setQuality(e.target.checked)}/>AI audio repair (never my voice)</label>
+     <label className="check"><input type="checkbox" checked={polish} onChange={e=>setPolish(e.target.checked)}/>Speaker balance & cautious noise/cough cleanup</label>
+     <label className="check"><input type="checkbox" checked={gaps} onChange={e=>setGaps(e.target.checked)}/>Accept capture gaps or lost audio</label>
+     <button className="primary wide" disabled={busy||unsealed||selected.exporting||!selected.frames} onClick={()=>action(async()=>{await recoverPending(n=>merge({backlog:n}));await api(`sessions/${selected.id}/export`,{method:'POST',body:JSON.stringify({acknowledge_gaps:gaps,quality_edit:quality,polish_audio:polish})});await refresh();})}>{selected.exporting?'Rendering & transcribing…':'Make the episode'}</button>
+     {selected.export_status&&<p role="status" className="export-status">{selected.export_status}</p>}
+     {selected.export_dir&&<><audio key={selected.export_dir} controls src={files('episode.mp3')}/><div className="downloads"><a href={files('episode.mp3')}>Download audio</a><a href={files('transcript.txt')}>Final transcript</a><a href={files('edit.json')}>Edit record</a>{selected.polished_audio&&<a href={files('polish.json')}>Noise & volume audit</a>}{selected.export_audio_review==='yes'&&<><a href={files('audio-diagnosis.json')}>AI audio diagnosis</a><a href={files('audio-edit-plan.json')}>Validated audio plan</a></>}<a href={files('original-guest.wav')}>Original guest</a><a href={files('original-ai.wav')}>Original AI</a></div><p className="hint">Listen before approving. Transcript timing is estimated.</p><button className="wide" disabled={busy||selected.exporting} onClick={()=>action(async()=>{await api(`sessions/${selected.id}/approve`,{method:'POST',body:JSON.stringify({version:selected.export_dir})});await refresh();})}>I've listened and checked the episode</button><VideoStage session={selected} busy={busy} action={action} refresh={refresh}/></>}
+    </div>}
+   </aside>
+  </main>
  </div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
