@@ -10,15 +10,23 @@ const captions=JSON.parse(await fs.readFile(path.join(root,'captions.json'),'utf
 const allowed=new Set(story.scenes.map((_,i)=>`scene-${i}.html`));
 for(const scene of story.scenes)for(const asset of scene.assets)allowed.add(`asset-${asset.id}.png`);
 const sources=story.source_uses??[];
-for(const use of sources){if(!/^s[0-3]$/.test(use.id))throw Error('Invalid source asset');allowed.add(`source-${use.id}.png`);}
+for(const use of sources){if(!/^s[0-3]$/.test(use.id)||use.clip&&use.clip!==`source-${use.id}.webm`)throw Error('Invalid source asset');allowed.add(`source-${use.id}.png`);if(use.clip)allowed.add(use.clip);}
 let origin;
 const server=http.createServer(async(req,res)=>{
  try{
   const target=new URL(req.url,origin),name=decodeURIComponent(target.pathname.slice(1));
   if(target.origin!==origin||req.method!=='GET'||!allowed.has(name)){res.writeHead(403);res.end();return;}
   const file=await fs.realpath(path.join(root,name));if(path.dirname(file)!==root)throw Error('Outside job');
-  res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'");
-  res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':'image/png');res.end(await fs.readFile(file));
+  res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'");
+  res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.webm')?'video/webm':'image/png');const bytes=await fs.readFile(file);let body=bytes;
+  if(name.endsWith('.webm')){
+   res.setHeader('Accept-Ranges','bytes');
+   if(req.headers.range){const match=/^bytes=(\d+)-(\d*)$/.exec(req.headers.range),start=match?Number(match[1]):NaN,end=match&&match[2]?Math.min(Number(match[2]),bytes.length-1):bytes.length-1;
+    if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>=bytes.length||end<start){res.writeHead(416,{'Content-Range':`bytes */${bytes.length}`});res.end();return;}
+    res.statusCode=206;res.setHeader('Content-Range',`bytes ${start}-${end}/${bytes.length}`);body=bytes.subarray(start,end+1);
+   }
+  }
+  res.setHeader('Content-Length',body.length);res.end(body);
  }catch{res.writeHead(404);res.end();}
 });
 // The same strict server is the browser proxy: never tunnel TURN/TLS or forward.
@@ -44,7 +52,7 @@ try{
   await page.evaluate(()=>{
    const caption=document.createElement('div');caption.id='podcast-captions';Object.assign(caption.style,{position:'fixed',bottom:'18px',left:'55px',right:'55px',font:'25px Arial',lineHeight:'1.3',color:'#fff',background:'#101820ed',padding:'12px 18px',borderRadius:'8px',textAlign:'center',zIndex:2147483647,pointerEvents:'none'});document.body.append(caption);
    const note=document.createElement('div');note.textContent='Episode illustration · recorded interactive app · captions estimated';Object.assign(note.style,{position:'fixed',bottom:'1px',left:'40px',font:'11px Arial',color:'#bcc7c3',zIndex:2147483647,pointerEvents:'none'});document.body.append(note);
-   const source=document.createElement('div');source.id='podcast-source';Object.assign(source.style,{display:'none',position:'fixed',inset:'15px 35px 120px',background:'#101820',zIndex:2147483646,padding:'12px',pointerEvents:'none'});document.body.append(source);
+   const source=document.createElement('div');source.id='podcast-source';Object.assign(source.style,{display:'none',position:'fixed',inset:'15px 35px 120px',background:'#101820',boxShadow:'0 0 0 100vmax #101820',zIndex:2147483646,padding:'12px',pointerEvents:'none'});document.body.append(source);
   });
   const start=performance.now();const offset=(start-created)/1000;
   let shown,interacting=false;
@@ -52,7 +60,7 @@ try{
    const now=scene.start+(performance.now()-start)/1000;const active=captions.filter(c=>c.start<=now&&c.end>now);
    page.locator('#podcast-captions').evaluate((el,text)=>{el.textContent=text;},active.map(c=>c.text).join(' · ')).catch(()=>{});
    const source=interacting?undefined:sources.find(s=>s.start<=now&&s.end>now);
-   if(source?.id!==shown){shown=source?.id;if(source)events.push({type:'source',item:source.id,scheduled_time:source.start,actual_time:now,evidence:source.evidence});page.locator('#podcast-source').evaluate((el,s)=>{el.replaceChildren();el.style.display=s?'block':'none';if(s){const label=document.createElement('div');label.textContent='Captured source · '+s.label;Object.assign(label.style,{font:'22px Arial',color:'white',height:'32px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'});const img=document.createElement('img');img.src='/source-'+s.id+'.png';Object.assign(img.style,{width:'100%',height:'calc(100% - 32px)',objectFit:'contain',background:'white'});el.append(label,img);}},source??null).catch(()=>{});}
+   if(source?.id!==shown){shown=source?.id;if(source)events.push({type:'source',item:source.id,scheduled_time:source.start,actual_time:now,evidence:source.evidence,clip:source.clip??null});page.locator('#podcast-source').evaluate((el,s)=>{el.replaceChildren();el.style.display=s?'block':'none';if(s){const label=document.createElement('div');label.textContent='Captured source · '+s.label+(s.clip?' · fitted playback':'');Object.assign(label.style,{font:'22px Arial',color:'white',height:'32px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'});const img=document.createElement(s.clip?'video':'img');img.src='/'+(s.clip??'source-'+s.id+'.png');if(s.clip){img.muted=true;img.autoplay=true;img.playsInline=true;img.addEventListener('loadedmetadata',()=>{img.currentTime=Math.min(s.playbackOffset,Math.max(0,img.duration-.01));});}Object.assign(img.style,{width:'100%',height:'calc(100% - 32px)',objectFit:'contain',background:'white'});el.append(label,img);}},source?{...source,playbackOffset:Math.max(0,now-source.start)}:null).catch(()=>{});}
   },120);
   await page.screenshot({path:path.join(root,`frame-${i}-initial.png`)});
   try{

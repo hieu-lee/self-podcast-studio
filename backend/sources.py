@@ -1,8 +1,9 @@
-"""Explicit public selections and trusted read-only local static-project catalog."""
+"""Explicit public selections and trusted static/application project consent."""
 import os,re,unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit,parse_qsl,unquote
 from pydantic import BaseModel,ConfigDict,Field
+from typing import Literal
 
 class Selection(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -14,7 +15,9 @@ class Project(BaseModel):
     id:str
     label:str
     root:str
-    public_dir:str
+    public_dir:str|None=None
+    kind:Literal['static','application']='static'
+    reuse_existing:bool=False
 
 class Catalog(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True)
@@ -57,9 +60,14 @@ def catalog():
     for item in projects:
         ident=item.id
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,50}',ident) or ident in seen:raise ValueError('Invalid/duplicate trusted project ID')
-        seen.add(ident);root=Path(item.root).resolve(strict=True);directory=(root/item.public_dir).resolve(strict=True)
-        if not directory.is_dir() or directory==root or not directory.is_relative_to(root):raise ValueError('Choose a public subdirectory inside the existing project')
-        result.append({'id':ident,'label':item.label[:180],'root':str(directory)})
+        seen.add(ident);root=Path(item.root).resolve(strict=True)
+        if not root.is_dir() or root==Path(root.anchor) or root==Path.home():raise ValueError('Choose a specific existing project directory')
+        if item.kind=='static':
+            if item.public_dir is None:raise ValueError('Static projects require a public subdirectory')
+            directory=(root/item.public_dir).resolve(strict=True)
+            if not directory.is_dir() or directory==root or not directory.is_relative_to(root):raise ValueError('Choose a public subdirectory inside the existing project')
+        else:directory=root
+        result.append({'id':ident,'label':item.label[:180],'root':str(directory),'kind':item.kind,'reuse_existing':item.reuse_existing})
     return result
 
 def selected_sources(selection):
@@ -72,5 +80,5 @@ def selected_sources(selection):
         result.append({'id':'s'+str(len(result)),'type':'public','url':url,'label':u.hostname})
     for ident in selected.project_ids:
         if ident not in projects:raise ValueError('Unknown local project; select an ID from the trusted source catalog')
-        p=projects[ident];result.append({'id':'s'+str(len(result)),'type':'local','project_id':ident,'label':p['label'],'root':p['root'],'path':'/'})
+        p=projects[ident];result.append({'id':'s'+str(len(result)),'type':'application' if p['kind']=='application' else 'local','project_id':ident,'label':p['label'],'root':p['root'],'path':'/','reuse_existing':p['reuse_existing']})
     return result

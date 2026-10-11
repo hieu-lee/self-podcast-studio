@@ -360,7 +360,7 @@ async def make_video(sid: str,data: VideoRequest):
 @app.get('/api/video-sources')
 async def video_sources():
     from .sources import catalog
-    try:return {'projects':[{k:p[k] for k in ('id','label')} for p in catalog()]}
+    try:return {'projects':[{k:p[k] for k in ('id','label','kind','reuse_existing')} for p in catalog()]}
     except (ValueError,OSError,KeyError):raise HTTPException(409,'Trusted source catalog is invalid; review host configuration')
 
 @app.post('/api/sessions/{sid}/video/cancel')
