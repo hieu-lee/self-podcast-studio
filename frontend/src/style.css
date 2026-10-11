@@ -139,3 +139,21 @@ textarea:not(.topic){min-height:88px;resize:vertical;margin-top:6px}
 .video-stage video{width:100%;border-radius:8px;background:#111}
 .video-stage progress{width:100%;accent-color:var(--ink)}
 .video-status{font-size:12px;overflow-wrap:anywhere;margin:0}
+/* One local episode, with durable preparation and finishing phases. */
+header{display:flex;align-items:center;justify-content:space-between}
+.episode-steps{list-style:none;padding:0;margin:0 0 32px;display:flex;flex-wrap:wrap;gap:10px 18px;font-size:11px;color:var(--muted)}
+.episode-steps li{display:flex;align-items:center;gap:5px}
+.episode-steps li span{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--line);border-radius:50%}
+.episode-steps .current{color:var(--ink);font-weight:600}
+.episode-steps .current span{background:var(--ink);color:var(--surface)}
+.episode-steps .complete{color:var(--good)}
+.workflow{display:grid;gap:20px;min-width:0;margin-bottom:28px}
+.workflow video{width:100%;background:#111;border-radius:10px}
+.workflow progress{width:100%;accent-color:var(--ink)}
+.workflow .download-video{border-radius:999px;text-decoration:none;background:var(--ink);border-color:var(--ink);color:var(--surface)}
+.source-choices{font-size:13px;margin:16px 0;overflow-wrap:anywhere}
+.source-choices summary,.export-panel summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.source-choices .check{margin-top:12px}
+.prep-download{display:inline-block;margin-top:24px;font-size:12px;color:var(--muted)}
+details.export-panel:not([open]){display:block}
+@media(max-width:480px){.episode-steps{gap:10px;font-size:10px}}

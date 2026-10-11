@@ -57,8 +57,21 @@ try{
    }catch(e){blocked.push({origin:target.origin,reason:e.message});if(main)mainError=e.message;await route.abort();}
   });
   const page=await context.newPage();page.on('download',d=>d.cancel());try{await page.goto(navigationURL??url,{waitUntil:'load',timeout:20000});}catch(e){await fs.writeFile(path.join(out,'source-capture-failure.json'),JSON.stringify({id:source.id,reason:mainError??'Page loading failed',blocked_requests:blocked},null,2));throw Error(mainError??'Page loading failed');}await page.waitForTimeout(500);if(mainError)throw Error(mainError);
+  let focus=null,focusKind='heading';
+  for(const selector of ['main h1, article h1, [role="main"] h1','main, article, [role="main"]','h1, h2']){
+   const matches=page.locator(selector);
+   for(let i=0,n=Math.min(50,await matches.count());i<n;i++){
+    const candidate=matches.nth(i);
+    if(!await candidate.isVisible()||!await candidate.evaluate(el=>!el.closest('header, nav, aside, [role="navigation"], [role="dialog"], dialog')&&el.innerText.trim().length>=3))continue;
+    focus=candidate;focusKind=await candidate.evaluate(el=>/^H[12]$/.test(el.tagName)?'heading':'content');break;
+   }
+   if(focus)break;
+  }
+  if(!focus)throw Error('Source content unavailable under the confined capture boundary; no navigation-only reference accepted');
+  await focus.evaluate(el=>el.scrollIntoView({block:'start'}));const focused=await focus.evaluate(el=>({focus_text:el.innerText.trim().slice(0,180),focus_top:el.getBoundingClientRect().top}));
+  const viewport=await page.evaluate(()=>({scroll_x:scrollX,scroll_y:scrollY,width:innerWidth,height:innerHeight}));Object.assign(viewport,focused,{focus_kind:focusKind});
   const finalURL=page.url();if(source.type==='public')publicURL(finalURL,origin);const title=(await page.title()).slice(0,180),filename=`source-${source.id}.png`;await page.screenshot({path:path.join(out,filename)});await context.close();
-  records.push({id:source.id,type:source.type,label:source.label??source.project_id??new URL(url).hostname,...(source.type==='public'?{selected_url:url,url:finalURL}:{project_id:source.project_id,served_files:files}),title,file:filename,sha256:crypto.createHash('sha256').update(await fs.readFile(path.join(out,filename))).digest('hex'),blocked_requests:blocked});
+  records.push({id:source.id,type:source.type,label:source.label??source.project_id??new URL(url).hostname,...(source.type==='public'?{selected_url:url,url:finalURL}:{project_id:source.project_id,served_files:files}),title,viewport,file:filename,sha256:crypto.createHash('sha256').update(await fs.readFile(path.join(out,filename))).digest('hex'),blocked_requests:blocked});
   if(local){local.closeAllConnections();await new Promise(r=>local.close(r));local=null;}
  }
  await fs.writeFile(path.join(out,'source-provenance.json'),JSON.stringify({sources:records,policy:'Explicit selected sources only; pinned public IPv4 HTTPS/same-origin redirects; local static public subtree read-only; fresh transport-confined browser; no credentials/private profile'},null,2));

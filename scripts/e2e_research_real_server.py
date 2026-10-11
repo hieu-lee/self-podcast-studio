@@ -19,4 +19,10 @@ class ObservedClient(RealClient):
         kwargs['event_hooks']={'response':[evidence]};super().__init__(*args,**kwargs)
 httpx.AsyncClient=ObservedClient
 from backend.app import app
+identity={'fixture':'self-podcast-owned-real-guided','nonce':uuid.uuid4().hex,'data_root':str((ROOT/'.artifacts/research/real-data').resolve()),'pid':os.getpid()}
+(ROOT/'.artifacts/research/real-server-identity.json').write_text(json.dumps(identity))
+@app.get('/api/owned-real-fixture-identity')
+async def owned_identity():return identity
+# This test-only route precedes production's catch-all static mount.
+app.router.routes.insert(0,app.router.routes.pop())
 uvicorn.run(app,host='127.0.0.1',port=8765,log_level='warning',access_log=False)

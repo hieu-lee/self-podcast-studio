@@ -1,0 +1,8 @@
+"""Real confined static-source content focus with tall navigation, no paid API."""
+import hashlib,json,subprocess
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'.artifacts/guided/source-content';public=OUT/'public';public.mkdir(parents=True,exist_ok=True)
+html='<!doctype html><meta charset="utf-8"><title>Owned content focus</title><nav style="height:1800px">Long navigation, not topic evidence</nav><div><h2>Actual topic evidence — nguồn thật</h2><p>Real article content remains unchanged.</p><div style="height:720px"></div></div>'
+(public/'index.html').write_text(html);before=hashlib.sha256((public/'index.html').read_bytes()).hexdigest();spec=OUT/'selection.json';spec.write_text(json.dumps({'sources':[{'id':'s0','type':'local','project_id':'owned-content','root':str(public),'path':'/'}]}))
+subprocess.run(['node',str(ROOT/'scripts/capture_sources.mjs'),str(OUT),str(spec)],cwd=ROOT,check=True)
+r=json.loads((OUT/'source-provenance.json').read_text())['sources'][0];assert r['viewport']['scroll_y']>720;assert r['viewport']['focus_text']=='Actual topic evidence — nguồn thật';assert -2<=r['viewport']['focus_top']<120;assert hashlib.sha256((public/'index.html').read_bytes()).hexdigest()==before;assert hashlib.sha256((OUT/r['file']).read_bytes()).hexdigest()==r['sha256'];(OUT/'e2e.json').write_text(json.dumps({'checks':['real confined capture focuses main article after tall navigation','original source bytes unchanged','actual screenshot hash and visible heading/viewport recorded'],'source':r},ensure_ascii=False,indent=2));print('Source content-focus E2E passed')

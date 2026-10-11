@@ -26,6 +26,12 @@ def delayed_event(sid,body):
     return real_event(sid,body)
 store.event=delayed_event
 
+guided_jobs=False
+@app.app.get('/api/owned-fixture-identity')
+async def identity():return {'fixture':'self-podcast-owned-research','guided_jobs':guided_jobs,'nonce':os.environ.get('SELF_PODCAST_E2E_NONCE')}
+# Production's catch-all static mount must not shadow this test-only ownership proof.
+app.app.router.routes.insert(0,app.app.router.routes.pop())
+
 @fixture.post('/responses')
 async def responses(request:Request):
     body=await request.json();requests.append(body)

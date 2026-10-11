@@ -1,6 +1,7 @@
 """Transactional, immutable recording chunks. No recording data lives in Git."""
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -25,10 +26,15 @@ def db(sid):
     return con
 
 
-def create(topic,language="en"):
+def create(topic,language="en",request_id=None):
     if language not in LANGUAGES:raise ValueError("Unsupported episode language")
-    sid = uuid.uuid4().hex
+    sid = request_id or uuid.uuid4().hex
+    if not re.fullmatch(r"[a-f0-9]{32}",sid):raise ValueError("Invalid session ID")
     path = ROOT / sid
+    if (path/"recording.sqlite").exists():
+        m=meta(sid)
+        if m["topic"]!=topic or m["language"]!=language:raise ValueError("Start request already belongs to another title/language")
+        return sid
     path.mkdir(mode=0o700)
     with sqlite3.connect(path / 'recording.sqlite') as c:
         c.executescript('''
@@ -76,7 +82,7 @@ def add_epoch(sid, eid, wall):
     with db(sid) as c:
         c.execute('INSERT INTO epochs VALUES (?,?,NULL)',(eid,wall))
         c.execute("UPDATE meta SET value='recording' WHERE key='state'")
-        c.execute("DELETE FROM meta WHERE key IN ('export_dir','export_status','export_audio_review','video_job')")
+        c.execute("DELETE FROM meta WHERE key IN ('export_dir','export_status','export_audio_review','video_job','workflow')")
 
 
 def chunk(sid, header, pcm):
