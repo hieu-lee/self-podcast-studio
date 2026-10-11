@@ -340,8 +340,11 @@ async def file(sid: str,name: str,version: str | None=Query(default=None,pattern
 
 
 
+from .sources import Selection
+
 class VideoRequest(BaseModel):
     version: str = Field(pattern=r'^export-[a-f0-9]{32}$')
+    sources: Selection = Field(default_factory=Selection)
 
 class VideoJob(VideoRequest):
     job_id: str = Field(pattern=r'^video-[a-f0-9]{32}$')
@@ -350,9 +353,15 @@ class VideoJob(VideoRequest):
 async def make_video(sid: str,data: VideoRequest):
     idle(sid)
     from . import video
-    try:job=video.start(sid,data.version)
+    try:job=video.start(sid,data.version,data.sources.model_dump())
     except ValueError as e:raise HTTPException(409,str(e))
     return {'job_id':job}
+
+@app.get('/api/video-sources')
+async def video_sources():
+    from .sources import catalog
+    try:return {'projects':[{k:p[k] for k in ('id','label')} for p in catalog()]}
+    except (ValueError,OSError,KeyError):raise HTTPException(409,'Trusted source catalog is invalid; review host configuration')
 
 @app.post('/api/sessions/{sid}/video/cancel')
 async def cancel_video(sid: str,data: VideoJob):
@@ -377,7 +386,7 @@ async def video_file(sid: str,job_id: str,name: str,version: str=Query(pattern=r
     from . import video
     try:root=video.status_path(sid,version,job_id).parent
     except ValueError:raise HTTPException(404,'Unknown video attempt')
-    if name not in {'episode.mp4','storyboard.json','provenance.json','captions.srt','captions.json','validation.json','capture-events.json','capture-security.json','project.zip'}:
+    if name not in {'episode.mp4','storyboard.json','provenance.json','captions.srt','captions.json','validation.json','capture-events.json','capture-security.json','source-provenance.json','source-plan.json','project.zip'}:
         raise HTTPException(404,'Unknown video artifact')
     state=root/'status.json'
     if name=='episode.mp4' and (not state.exists() or video.load(state)['state']!='completed'):

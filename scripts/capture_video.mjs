@@ -9,6 +9,8 @@ const story=JSON.parse(await fs.readFile(path.join(root,'storyboard.json'),'utf8
 const captions=JSON.parse(await fs.readFile(path.join(root,'captions.json'),'utf8')).cues;
 const allowed=new Set(story.scenes.map((_,i)=>`scene-${i}.html`));
 for(const scene of story.scenes)for(const asset of scene.assets)allowed.add(`asset-${asset.id}.png`);
+const sources=story.source_uses??[];
+for(const use of sources){if(!/^s[0-3]$/.test(use.id))throw Error('Invalid source asset');allowed.add(`source-${use.id}.png`);}
 let origin;
 const server=http.createServer(async(req,res)=>{
  try{
@@ -42,17 +44,22 @@ try{
   await page.evaluate(()=>{
    const caption=document.createElement('div');caption.id='podcast-captions';Object.assign(caption.style,{position:'fixed',bottom:'18px',left:'55px',right:'55px',font:'25px Arial',lineHeight:'1.3',color:'#fff',background:'#101820ed',padding:'12px 18px',borderRadius:'8px',textAlign:'center',zIndex:2147483647,pointerEvents:'none'});document.body.append(caption);
    const note=document.createElement('div');note.textContent='Episode illustration · recorded interactive app · captions estimated';Object.assign(note.style,{position:'fixed',bottom:'1px',left:'40px',font:'11px Arial',color:'#bcc7c3',zIndex:2147483647,pointerEvents:'none'});document.body.append(note);
+   const source=document.createElement('div');source.id='podcast-source';Object.assign(source.style,{display:'none',position:'fixed',inset:'15px 35px 120px',background:'#101820',zIndex:2147483646,padding:'12px',pointerEvents:'none'});document.body.append(source);
   });
   const start=performance.now();const offset=(start-created)/1000;
+  let shown,interacting=false;
   const timer=setInterval(()=>{
    const now=scene.start+(performance.now()-start)/1000;const active=captions.filter(c=>c.start<=now&&c.end>now);
    page.locator('#podcast-captions').evaluate((el,text)=>{el.textContent=text;},active.map(c=>c.text).join(' · ')).catch(()=>{});
+   const source=interacting?undefined:sources.find(s=>s.start<=now&&s.end>now);
+   if(source?.id!==shown){shown=source?.id;if(source)events.push({type:'source',item:source.id,scheduled_time:source.start,actual_time:now,evidence:source.evidence});page.locator('#podcast-source').evaluate((el,s)=>{el.replaceChildren();el.style.display=s?'block':'none';if(s){const label=document.createElement('div');label.textContent='Captured source · '+s.label;Object.assign(label.style,{font:'22px Arial',color:'white',height:'32px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'});const img=document.createElement('img');img.src='/source-'+s.id+'.png';Object.assign(img.style,{width:'100%',height:'calc(100% - 32px)',objectFit:'contain',background:'white'});el.append(label,img);}},source??null).catch(()=>{});}
   },120);
   await page.screenshot({path:path.join(root,`frame-${i}-initial.png`)});
   try{
    for(let j=0;j<scene.actions.length;j++){
     const a=scene.actions[j];await wait((a.time-scene.start)*1000-(performance.now()-start));
     const actual=scene.start+(performance.now()-start)/1000;
+    interacting=true;shown=undefined;await page.locator('#podcast-source').evaluate(el=>{el.style.display='none';});
     if(a.type==='drag'){
      const card=page.locator(`[data-item="${a.item}"]`),zone=page.locator(`[data-tier="${a.tier}"]`);
      if(await card.count()!==1||await zone.count()!==1)throw Error('Ambiguous/missing interactive item or tier');
@@ -70,7 +77,7 @@ try{
      const control=page.locator(`[data-control="${a.item}"]`);if(await control.count()!==1)throw Error('Ambiguous/missing visualization control');
      await control.click();events.push({...a,scene:i,scheduled_time:a.time,actual_time:actual});
     }
-    await wait(150);await page.screenshot({path:path.join(root,`frame-${i}-${j}-after.png`)});
+    await wait(150);await page.screenshot({path:path.join(root,`frame-${i}-${j}-after.png`)});interacting=false;
    }
    await wait((scene.end-scene.start)*1000-(performance.now()-start));
    await page.screenshot({path:path.join(root,`frame-${i}-final.png`)});
